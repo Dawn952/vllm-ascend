@@ -143,7 +143,6 @@ from vllm_ascend.distributed.kv_transfer.sparse_kv_offload.sparse_kv_offload_man
     reshape_kv_cache_tensors_for_sparse_kv_offload,
     update_sparse_kv_offload_metadata,
 )
-from vllm_ascend.distributed.utils import get_decode_context_model_parallel_world_size
 from vllm_ascend.eplb.adaptor.vllm_adaptor import VllmEplbAdaptor
 from vllm_ascend.eplb.core.eplb_device_transfer_loader import D2DExpertWeightLoader
 from vllm_ascend.eplb.core.eplb_worker import EplbProcess
@@ -664,6 +663,17 @@ class NPUModelRunner(GPUModelRunner):
             if dspark_layer_ids:
                 return tuple(i + 1 for i in dspark_layer_ids)
         return None
+
+    def _draft_uses_qwen3_gqa_dspark(self) -> bool:
+        """Return whether the draft expects Kimi's materialized residual."""
+        if self.speculative_config is None or not self.speculative_config.use_dspark():
+            return False
+        draft_model_config = self.speculative_config.draft_model_config
+        if draft_model_config is None:
+            return False
+        hf_config = draft_model_config.hf_config
+        architectures = getattr(hf_config, "architectures", ()) or ()
+        return getattr(hf_config, "model_type", None) == "qwen3" and "Qwen3DSparkModel" in architectures
 
     def _use_aclgraph(self) -> bool:
         return (
@@ -2736,10 +2746,15 @@ class NPUModelRunner(GPUModelRunner):
         num_encoder_reqs: int = 0,
     ) -> tuple[CUDAGraphMode, BatchDescriptor, bool, torch.Tensor | None, CUDAGraphStat | None]:
         num_tokens_padded = self._pad_for_sequence_parallelism(num_tokens)
-        is_all_decode = np.all(self.input_batch.num_computed_tokens_cpu[:num_reqs] > 0)
+        # A one-token chunk can still be prefill at a P/D handoff. Decode graph
+        # replay is valid only after every prompt has been fully computed.
+        is_all_decode = np.all(
+            self.input_batch.num_computed_tokens_cpu[:num_reqs]
+            >= self.input_batch.num_prompt_tokens[:num_reqs]
+        )
         uniform_decode = (
             (
-                (is_all_decode if self.speculative_config else True)
+                is_all_decode
                 and (max_num_scheduled_tokens == self.uniform_decode_query_len)
                 and (num_tokens == max_num_scheduled_tokens * num_reqs)
             )
@@ -3550,6 +3565,19 @@ class NPUModelRunner(GPUModelRunner):
                 if not aux_layers:
                     aux_layers = self.model.get_eagle3_default_aux_hidden_state_layers()
                 self.model.set_aux_hidden_state_layers(aux_layers)
+                if self.speculative_config.use_dspark():
+                    set_capture_mode = getattr(
+                        self.model,
+                        "set_dspark_aux_capture_materialized",
+                        None,
+                    )
+                    if set_capture_mode is not None:
+                        materialized = self._draft_uses_qwen3_gqa_dspark()
+                        set_capture_mode(materialized)
+                        logger.info(
+                            "Kimi K3 DSpark auxiliary capture uses %s stream.",
+                            "materialized GQA" if materialized else "raw MLA",
+                        )
 
                 if pp_group.world_size > 1:
                     inner_model = self.model
@@ -3666,10 +3694,9 @@ class NPUModelRunner(GPUModelRunner):
         # NOTE(cmq): initialize_attn_backend must before using self.attn_groups
         self.initialize_attn_backend(kv_cache_config)
         self.use_hybrid_blocks = len(self.attn_groups) > 1
-        # NOTE: Currently, we determine whether we need `num_accepted_tokens` through `MambaSpec`.
-        self.need_accepted_tokens = any(
-            [isinstance(attn_group[0].kv_cache_spec, MambaSpec) for attn_group in self.attn_groups]
-        )
+        # K3's packed layout keeps Mamba specs inside UniformType groups, so the
+        # old first-spec scan over attn_groups cannot recognize them.
+        self.need_accepted_tokens = kv_cache_config.has_mamba_layers
 
         self.may_reinitialize_input_batch(kv_cache_config)
         if self.sparse_kv_offload_enabled:
@@ -3692,10 +3719,18 @@ class NPUModelRunner(GPUModelRunner):
                 self.drafter,
                 AscendEagleProposer | AscendDflashProposer | AscendDSparkProposer | AscendDraftModelProposer,
             )
-            block_size = (self.kernel_block_sizes[0] if isinstance(
-                self.kernel_block_sizes, list) else self.kernel_block_sizes)
-            self.drafter.initialize_attn_backend(kv_cache_config, block_size)
-        
+            kernel_block_sizes = self.kernel_block_sizes
+            if isinstance(self.drafter, AscendDSparkProposer):
+                sizes = kernel_block_sizes if isinstance(kernel_block_sizes, list) else [kernel_block_sizes]
+                draft_kernel_block_sizes = [
+                    int(size[0] if isinstance(size, (list, tuple)) else size) for size in sizes
+                ]
+            else:
+                draft_kernel_block_sizes = (
+                    kernel_block_sizes[0] if isinstance(kernel_block_sizes, list) else kernel_block_sizes
+                )
+            self.drafter.initialize_attn_backend(kv_cache_config, draft_kernel_block_sizes)
+
         if (
             self.speculative_config
             and self.speculative_config.uses_extract_hidden_states()
@@ -4527,18 +4562,10 @@ class NPUModelRunner(GPUModelRunner):
         max_num_blocks = []
         max_model_len = max(self.max_model_len, self.max_encoder_len)
         for kv_cache_group in non_encoder_groups:
-            max_num_blocks_per_req = cdiv(
+            max_num_blocks_per_req = kv_cache_group.kv_cache_spec.max_num_blocks_per_req(
+                self.vllm_config,
                 max_model_len,
-                kv_cache_group.kv_cache_spec.block_size
-                * get_decode_context_model_parallel_world_size(),
             )
-            if isinstance(kv_cache_group.kv_cache_spec, MambaSpec):
-                mamba_blocks_per_req = (
-                    max_num_blocks_per_req if self.cache_config.enable_prefix_caching else 1
-                ) 
-
-                max_num_blocks_per_req = max(max_num_blocks_per_req, mamba_blocks_per_req)
-                max_num_blocks_per_req += kv_cache_group.kv_cache_spec.num_speculative_blocks
             max_num_blocks.append(max_num_blocks_per_req)
 
         if (block_sizes != [self.cache_config.block_size]
@@ -4581,6 +4608,7 @@ class NPUModelRunner(GPUModelRunner):
         class AttentionGroupKey(NamedTuple):
             attn_backend: type[AttentionBackend]
             kv_cache_spec: KVCacheSpec
+            use_mla_rope: bool | None
 
         def get_attn_backends_for_group(
             kv_cache_group_spec: KVCacheGroupSpec,
@@ -4610,12 +4638,13 @@ class NPUModelRunner(GPUModelRunner):
             # they are cached correctly, there will be different objects per
             # layer.
             for layer_name in kv_cache_group_spec.layer_names:
+                layer = layers[layer_name]
                 layer_kv_cache_spec = kv_cache_group_spec.kv_cache_spec
                 if isinstance(layer_kv_cache_spec, UniformTypeKVCacheSpecs):
                     layer_kv_cache_spec = layer_kv_cache_spec.kv_cache_specs[layer_name]
                 # Prefer the backend declared by the layer itself. Some
                 # indexer-cache layers require their own metadata builder.
-                attn_backend = layers[layer_name].get_attn_backend()
+                attn_backend = layer.get_attn_backend()
                 if (
                     isinstance(layer_kv_cache_spec, AscendSFAIndexerCacheSpec)
                     and not backend_supports_kernel_block_size(
@@ -4627,8 +4656,17 @@ class NPUModelRunner(GPUModelRunner):
 
                     attn_backend = AscendSFAIndexerBackend
                 full_cls_name = attn_backend.full_cls_name()
-                key = (full_cls_name, layer_kv_cache_spec)
-                attn_backends[key] = AttentionGroupKey(attn_backend, layer_kv_cache_spec)
+                use_mla_rope = (
+                    layer.impl.use_mla_rope
+                    if issubclass(attn_backend, AscendMLABackend)
+                    else None
+                )
+                key = (full_cls_name, layer_kv_cache_spec, use_mla_rope)
+                attn_backends[key] = AttentionGroupKey(
+                    attn_backend,
+                    layer_kv_cache_spec,
+                    use_mla_rope,
+                )
                 attn_backend_layers[key].append(layer_name)
             return (
                 {attn_backends[k]: v for k, v in attn_backend_layers.items()},
@@ -4636,10 +4674,13 @@ class NPUModelRunner(GPUModelRunner):
             )
 
         def create_attn_groups(
-            attn_backends_map: dict[AttentionBackend, list[str]], kv_cache_group_id: int
+            attn_backends_map: dict[AttentionGroupKey, list[str]],
+            kv_cache_group_id: int,
         ) -> list[AttentionGroup]:
             attn_groups: list[AttentionGroup] = []
-            for (attn_backend, kv_cache_spec), layer_names in attn_backends_map.items():
+            for group_key, layer_names in attn_backends_map.items():
+                attn_backend = group_key.attn_backend
+                kv_cache_spec = group_key.kv_cache_spec
                 attn_metadata_builders = []
                 attn_metadata_builders.append(
                     attn_backend.get_builder_cls()(
@@ -4753,6 +4794,7 @@ class NPUModelRunner(GPUModelRunner):
                         head_size=head_size,
                         dtype=dtype,
                         cache_dtype_str=cache_dtype_str,
+                        non_causal_multi_token_decode=spec.non_causal_multi_token_decode,
                     )
                     attn_layer_names.add(layer_name)
 
@@ -4837,12 +4879,34 @@ class NPUModelRunner(GPUModelRunner):
                     min_cg_attn_backend = attn_backend.__name__
 
         with update_pass_config(self):
+            tensor_parallel_size = self.parallel_config.tensor_parallel_size
+            resolver_tensor_parallel_size = tensor_parallel_size
+            if (
+                self.compilation_config.pass_config.enable_sp
+                and self.uniform_decode_query_len > 1
+                and tensor_parallel_size > 1
+            ):
+                graph_alignment = math.lcm(
+                    self.uniform_decode_query_len,
+                    tensor_parallel_size,
+                )
+                capture_sizes = self.compilation_config.cudagraph_capture_sizes
+                # vLLM 0.27 has no path for explicit capture sizes that are
+                # already aligned to both speculative steps and SP. Skip its
+                # redundant TP adjustment only for that exact case.
+                if (
+                    graph_alignment
+                    > max(self.uniform_decode_query_len, tensor_parallel_size)
+                    and capture_sizes
+                    and all(size % graph_alignment == 0 for size in capture_sizes)
+                ):
+                    resolver_tensor_parallel_size = 1
             cudagraph_mode = self.compilation_config.resolve_cudagraph_mode_and_sizes(
                 min_cg_support=min_cg_support,
                 min_cg_attn_backend=min_cg_attn_backend,
                 uniform_decode_query_len=self.uniform_decode_query_len,
                 use_v2_model_runner=False,
-                tensor_parallel_size=self.parallel_config.tensor_parallel_size,
+                tensor_parallel_size=resolver_tensor_parallel_size,
                 kv_cache_config=self.kv_cache_config,
                 max_num_reqs=self.max_num_reqs,
             )
