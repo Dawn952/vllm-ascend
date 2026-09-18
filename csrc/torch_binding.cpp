@@ -3334,7 +3334,7 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ascend), ops)
         "flash_mla_with_kvcache_metadata(Tensor cache_seqlens, int num_heads_q, int num_heads_kv, "
         "Tensor? cu_seqlens_q=None, Tensor? seqused_q=None, int max_seqlen_q=-1, "
         "int max_seqlen_kv=-1, int head_dim_qk=576, int head_dim_v=512, "
-        "int mask_mode=0, str layout_q='BSND') -> Tensor");
+        "int mask_mode=0, str layout_q='BSND', bool is_c8=False) -> Tensor");
     ops.impl("flash_mla_with_kvcache_metadata", torch::kPrivateUse1,
              &vllm_ascend::flash_mla_with_kvcache_metadata);
 
@@ -3344,7 +3344,9 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ascend), ops)
         "Tensor? attn_mask=None, Tensor? metadata=None, int head_dim_v=512, "
         "float softmax_scale=1.0, int mask_mode=0, int max_seqlen_q=-1, "
         "int max_seqlen_kv=-1, str layout_q='TND', str layout_kv='PA_NZ', "
-        "str? layout_out=None, bool return_softmax_lse=False) -> (Tensor, Tensor)");
+        "str? layout_out=None, bool return_softmax_lse=False, "
+        "Tensor? query_rope=None, Tensor? key_rope=None, "
+        "Tensor? dequant_scale_query=None, Tensor? dequant_scale_key=None) -> (Tensor, Tensor)");
     ops.impl("flash_mla_with_kvcache", torch::kPrivateUse1,
              &vllm_ascend::flash_mla_with_kvcache);
 
