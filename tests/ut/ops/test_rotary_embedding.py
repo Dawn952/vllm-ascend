@@ -53,10 +53,10 @@ NUM_HEADS = 2
     ],
 )
 def test_apply_rotary_emb_preserves_rotation_layout(is_neox_style, expected_cos, expected_mode):
-    emb = AscendApplyRotaryEmb(
-        enforce_enable=True,
-        is_neox_style=is_neox_style,
-    )
+    emb = AscendApplyRotaryEmb.__new__(AscendApplyRotaryEmb)
+    torch.nn.Module.__init__(emb)
+    emb.is_neox_style = is_neox_style
+    emb.enable_fp32_compute = False
     x = torch.arange(8, dtype=torch.float32).reshape(2, 1, 4)
     cos = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
     sin = torch.tensor([[5.0, 6.0], [7.0, 8.0]])
