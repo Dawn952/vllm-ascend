@@ -558,6 +558,10 @@ if (BUILD_OPS_RTY_KERNEL)
     install(FILES ${VLLM_ASCEND_CANN_COMPAT_HEADER}
             DESTINATION ${IMPL_INSTALL_DIR}/ascendc/common
     )
+    # FlashAttn's shared headers use relative includes outside ascendc/.
+    install(DIRECTORY ${OPS_TRANSFORMER_DIR}/attention/a5_mla_common/op_kernel
+            DESTINATION ${IMPL_INSTALL_DIR}/a5_mla_common
+    )
 
     foreach (op_dir ${OP_DIR_LIST})
         get_filename_component(_op_name "${op_dir}" NAME)

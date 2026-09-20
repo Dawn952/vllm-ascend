@@ -114,3 +114,43 @@ def test_cann_compat_survives_package_relocation(tmp_path, monkeypatch, install_
     (relocated / "vendor_impl/ascendc/common/cann_compat.h").unlink()
     missing = subprocess.run(command, input="", text=True, capture_output=True)
     assert missing.returncode != 0 and "cann_compat.h" in missing.stderr
+
+
+@pytest.mark.parametrize("install_source", ["csrc/CMakeLists.txt", "csrc/cmake/custom_build.cmake"])
+def test_flash_attention_shared_headers_survive_relocation(tmp_path, install_source):
+    cmake = shutil.which("cmake")
+    if cmake is None:
+        pytest.skip("CMake is required")
+    install_rule = re.search(
+        r"install\(DIRECTORY \$\{OPS_TRANSFORMER_DIR\}/attention/a5_mla_common/op_kernel\s+"
+        r"DESTINATION \$\{IMPL_INSTALL_DIR\}/a5_mla_common\s*\)",
+        (ROOT / install_source).read_text(),
+    )
+    assert install_rule is not None
+    source = tmp_path / "source"
+    shared = ROOT / "csrc/attention/a5_mla_common/op_kernel"
+    shutil.copytree(shared, source / "csrc/attention/a5_mla_common/op_kernel")
+    (source / "CMakeLists.txt").write_text(
+        "cmake_minimum_required(VERSION 3.16)\nproject(FlashHeaders NONE)\n"
+        'set(OPS_TRANSFORMER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/csrc")\n'
+        'set(IMPL_INSTALL_DIR "vendor_impl")\n' + install_rule.group(0) + "\n"
+    )
+    build, stage = tmp_path / "build", tmp_path / "stage"
+    subprocess.run([cmake, "-S", str(source), "-B", str(build), f"-DCMAKE_INSTALL_PREFIX={stage}"], check=True)
+    subprocess.run([cmake, "--install", str(build)], check=True)
+    # Use the kernel's actual include paths after flattening op_kernel, just
+    # as the installed dynamic adapter does. The source tree must not help.
+    kernel = stage / "vendor_impl/ascendc/flash_attn"
+    shutil.copytree(ROOT / "csrc/attention/flash_attn/op_kernel", kernel)
+    relocated = tmp_path / "relocated"
+    stage.rename(relocated)
+    shutil.rmtree(source)
+    shutil.rmtree(build)
+    includes_checked = 0
+    for path in (relocated / "vendor_impl").rglob("*"):
+        if path.suffix not in {".h", ".cpp"}:
+            continue
+        for include in re.findall(r'#include\s+"(\.\./[^\"]+)"', path.read_text()):
+            assert (path.parent / include).is_file(), (path, include)
+            includes_checked += 1
+    assert includes_checked > 0
