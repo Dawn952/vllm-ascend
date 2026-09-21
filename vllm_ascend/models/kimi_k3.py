@@ -82,6 +82,7 @@ from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
 from vllm_ascend.ops.kimi_kda import AscendKimiK3DeltaAttention  # type: ignore[import-untyped]
 from vllm_ascend.ops.linear_op import KimiOProjMMReduceScatterOp
+from vllm_ascend.quantization.methods.w8a8.w8a8_mxfp8 import AscendW8A8MXFP8DynamicLinearMethod
 from vllm_ascend.utils import enable_kimi_k3_sp, get_rotation_path
 from vllm_ascend.worker.v2.pp_utils import (
     PPTransportDataType,
@@ -91,6 +92,43 @@ from vllm_ascend.worker.v2.pp_utils import (
 from vllm_ascend.worker.v2.pp_utils import (
     make_empty_intermediate_tensors as make_pp_empty_intermediate_tensors,
 )
+
+
+class AscendKimiRoutedOutputTransform(KimiRoutedOutputTransform):
+    """Fuse the latent RMSNorm and MXFP8 activation quantization on A5."""
+
+    def __init__(self, norm: RMSNorm | None, up_proj: ReplicatedLinear) -> None:
+        super().__init__(norm, up_proj)
+        self._supports_mx_norm_fusion = get_current_hardware_profile().supports(
+            HardwareCapability.DYNAMIC_MX_QUANT_FUSION
+        ) and hasattr(torch.ops.npu, "npu_rms_norm_dynamic_mx_quant")
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        scheme = getattr(getattr(self.up_proj, "quant_method", None), "quant_method", None)
+        if (
+            self.norm is not None
+            and self._supports_mx_norm_fusion
+            and isinstance(scheme, AscendW8A8MXFP8DynamicLinearMethod)
+            and scheme.group_size == 32
+            # The prequantized linear input contract returns BF16.
+            and hidden_states.dtype == torch.bfloat16
+            and hidden_states.ndim == 2
+            and hidden_states.shape[-1] % 64 == 0
+            and getattr(self.norm, "bias", None) is None
+            and getattr(self.norm, "variance_size_override", None) is None
+            and getattr(self.up_proj, "custom_op", None) is None
+            and not any(getattr(self.up_proj, "mxfp8_tp_padding", (0, 0)))
+        ):
+            quantized, scale, _ = torch.ops.npu.npu_rms_norm_dynamic_mx_quant(
+                hidden_states,
+                self.norm.weight,
+                epsilon=self.norm.variance_epsilon,
+                scale_alg=scheme.dynamic_mx_quant_scale_alg,
+                dst_type=torch.float8_e4m3fn,
+            )
+            hidden_states, _ = self.up_proj((quantized, scale))
+            return hidden_states
+        return super().forward(hidden_states)
 
 
 def _apply_ascend_attn_res(
@@ -221,7 +259,7 @@ class AscendKimiMoE(nn.Module):
                 quant_config=latent_quant_config,
                 prefix=f"{prefix}.routed_expert_up_proj",
             )
-            self.routed_output_transform = KimiRoutedOutputTransform(
+            self.routed_output_transform = AscendKimiRoutedOutputTransform(
                 self.routed_expert_norm,
                 self.routed_expert_up_proj,
             )
