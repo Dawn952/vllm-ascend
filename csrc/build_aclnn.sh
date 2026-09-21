@@ -220,6 +220,7 @@ elif [[ "$SOC_VERSION" =~ ^ascend950 ]]; then
         "flash_mla_with_kvcache"
         "flash_mla_with_kvcache_metadata"
         "moe_gating_top_k_hash"
+        "moe_gating_top_k_with_map"
         "inplace_partial_rotary_mul"
         "kv_compress_epilog"
         "compressor"

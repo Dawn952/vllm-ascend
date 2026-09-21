@@ -40,6 +40,7 @@
 #include "gmm/grouped_matmul_swiglu_quant_v2/grouped_matmul_swiglu_quant_v2_torch_adpt.h"
 #include "attention/lightning_indexer/lightning_indexer_torch_adpt.h"
 #include "moe/moe_gating_top_k/moe_gating_top_k_torch_adpt.h"
+#include "moe/moe_gating_top_k_with_map/moe_gating_top_k_with_map_torch_adpt.h"
 #include "attention/sparse_flash_attention/sparse_flash_attention_torch_adpt.h"
 #include "attention/sparse_flash_mla/sparse_flash_mla_torch_adpt.h"
 #include "attention/quant_lightning_indexer_v2/quant_lightning_indexer_v2_torch_adpt.h"
@@ -3281,6 +3282,13 @@ TORCH_LIBRARY_EXPAND(CONCAT(_C, _ascend), ops)
         "-> (Tensor y ,Tensor expert_idx, Tensor out)"
         );
     ops.impl("moe_gating_top_k", torch::kPrivateUse1,&vllm_ascend::moe_gating_top_k);
+
+    ops.def(
+        "moe_gating_top_k_with_map(Tensor x, Tensor log2phy, int k, int k_group, "
+        "int group_count, int group_select_mode, int renorm, int norm_type, "
+        "bool out_flag, float routed_scaling_factor, float eps, Tensor? bias_opt=None) "
+        "-> (Tensor y, Tensor expert_idx, Tensor out)");
+    ops.impl("moe_gating_top_k_with_map", torch::kPrivateUse1, &vllm_ascend::moe_gating_top_k_with_map);
 
     ops.def(
         "npu_add_rms_norm_bias(Tensor x1, "
