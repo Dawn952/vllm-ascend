@@ -250,3 +250,54 @@ def test_bf16_input_mx_quant_matches_separate_quant(tokens, heads, kv_quant_mode
         for cache, reference in zip((kv_cache, kr_cache), expected_cache):
             torch.testing.assert_close(cache.cpu().float(), reference, rtol=0, atol=0)
         assert torch.all(storage[:, 1].cpu() == 42)
+
+
+@torch.inference_mode()
+def test_dcp8_prolog_graph_replay_changed_input_and_slots():
+    """Replaying the split-Q/KV prolog preserves outputs and untouched KV."""
+    tokens, heads = 64, 96
+    kwargs, _ = make_mxfp8_prolog_inputs(tokens, heads)
+    raw = torch.randn(tokens, 1, 7168, dtype=torch.bfloat16, device="npu")
+    slots = torch.arange(tokens, dtype=torch.int64, device="npu").view(tokens, 1) + 127
+    storage = torch.full((4, 2, 128, 576), 42, dtype=torch.bfloat16, device="npu")
+    kwargs.update(
+        token_x=raw,
+        dequant_scale_x=None,
+        cache_index=slots,
+        kv_cache=storage[:, 0, :, :512].unsqueeze(2),
+        kr_cache=storage[:, 0, :, 512:].unsqueeze(2),
+    )
+    op = torch.ops._C_ascend.npu_mla_prolog_v3
+    for _ in range(3):
+        op(**kwargs)
+    torch.npu.synchronize()
+    graph = torch.npu.NPUGraph()
+    with torch.npu.graph(graph):
+        replayed = op(**kwargs)
+
+    for case_index, case in enumerate(("normal", "zero", "wide", "normal_again")):
+        if case == "zero":
+            raw.zero_()
+        elif case == "wide":
+            raw.copy_((torch.randn_like(raw).float() * torch.logspace(-5, 3, 7168, device="npu")).bfloat16())
+        else:
+            raw.normal_()
+        slots.copy_((torch.arange(tokens, device="npu") + 127 + case_index * 31).view(tokens, 1))
+        slots[::9] = -1
+        storage.fill_(42)
+        quantized, scales = torch_npu.npu_dynamic_mx_quant(raw, dst_type=torch.float8_e4m3fn, scale_alg=0)
+        expected = op(**dict(kwargs, token_x=quantized, dequant_scale_x=scales.flatten(1).view(torch.float8_e8m0fnu)))
+        torch.npu.synchronize()
+        expected_outputs = [value.cpu().float().clone() for value in expected]
+        expected_storage = storage.cpu().clone()
+        storage.fill_(42)
+        graph.replay()
+        torch.npu.synchronize()
+        for actual, reference in zip(replayed, expected_outputs):
+            torch.testing.assert_close(actual.cpu().float(), reference, rtol=0, atol=0)
+        torch.testing.assert_close(storage.cpu(), expected_storage, rtol=0, atol=0)
+        assert torch.all(storage[:, 1].cpu() == 42)
+        written = torch.zeros(4 * 128, dtype=torch.bool)
+        valid_slots = slots.flatten().cpu()
+        written[valid_slots[valid_slots >= 0]] = True
+        assert torch.all(storage[:, 0].cpu().reshape(4 * 128, 576)[~written] == 42)

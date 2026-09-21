@@ -62,6 +62,11 @@ public:
     MMParams mmCkvKrParam_;
     MMParams mmQcQrParam_;
     MMParams mmQnParam_;
+    // The DCP8 K3 shape assigns disjoint cube groups to the input projections.
+    static constexpr uint32_t K3_Q_PROJ_CORES = 24;
+    static constexpr uint32_t K3_KV_PROJ_CORES = 6;
+    static constexpr uint32_t K3_KV_PROJ_N = 96;
+    bool parallelQkv_ = false;
 
     __aicore__ inline MlaPrologVecS1CubS2(TPipe *pipe, const optiling::MlaPrologTilingData *__restrict tilingData,
                                           const optiling::MlaPrologBaseParams *__restrict baseParams)
@@ -435,12 +440,26 @@ __aicore__ inline void MlaPrologVecS1CubS2<MLAPT>::MmCqParamInit()
 template <typename MLAPT>
 __aicore__ inline void MlaPrologVecS1CubS2<MLAPT>::MmCkvKrParamInit()
 {
+    // T64/H96 leaves eight AICs idle in MM1. Put KV on six of them so
+    // the two projections run concurrently, without changing vector barriers.
+    if constexpr (inputQuant && !MLAPT::enableRope &&
+                  MLAPT::emptyMode != EMPTY_TENSOR_MODE::EMPTY_CACHE &&
+                  std::is_same<kvCacheType, bfloat16_t>::value && isFp8E8m0) {
+        parallelQkv_ = baseParams_->tokenSize == 64 && baseParams_->stepBatchSize == 64 &&
+                       baseParams_->numHeadSize == 96 && baseParams_->headSizeX == 7168 &&
+                       baseParams_->headSizeCq == 1536 && baseParams_->headSizeCkv == 512 &&
+                       baseParams_->headSizeKr == 64 && baseParams_->mm1BlockNum == K3_Q_PROJ_CORES &&
+                       baseParams_->mm3BlockNum == 32;
+    }
     mmCkvKrParam_.m = baseParams_->stepBatchSize; // 32
     if (cubeBlockIdx_ == baseParams_->mm2BlockNum - 1) {
         mmCkvKrParam_.n =
             baseParams_->headSizeCkv + baseParams_->headSizeKr - baseParams_->mm2SingleCoreN * cubeBlockIdx_;
     } else {
         mmCkvKrParam_.n = baseParams_->mm2SingleCoreN;
+    }
+    if (parallelQkv_) {
+        mmCkvKrParam_.n = K3_KV_PROJ_N;
     }
     mmCkvKrParam_.k = baseParams_->headSizeX; // 7168
     mmCkvKrParam_.needSetOrgShape = 1;
@@ -452,7 +471,9 @@ __aicore__ inline void MlaPrologVecS1CubS2<MLAPT>::MmCkvKrParamInit()
     mmCkvKrParam_.baseK =
         (sizeof(mmInputType) == ONE_BYTE_TYPE_SIZE) ? 256 : 128; // 128KB / (128 max baseN * 4 stepK * sizeof(type))
     mmCkvKrParam_.baseN = 128;
-    mmCkvKrParam_.stepK = 4;
+    // N96 x K512 is 48 KiB. Scales occupy [64,99) KiB of L1B ping;
+    // K1024 would overlap this scale range and is deliberately not used.
+    mmCkvKrParam_.stepK = parallelQkv_ ? 2 : 4;
     if ((mmCkvKrParam_.k / mmCkvKrParam_.baseK) % mmCkvKrParam_.stepK != 0) {
         mmCkvKrParam_.stepK = 3; // support k = 7680, mmInputType int8, no tail
     }
@@ -822,6 +843,14 @@ __aicore__ inline void MlaPrologVecS1CubS2<MLAPT>::InputQuantAndPrefetch()
                     dequantScaleWDqGm_[firstN * mmCqParam_.kScale],
                     (mmCqParam_.baseN < mmCqParam_.n ? mmCqParam_.baseN : mmCqParam_.n), mmCqParam_.kL1StepSize,
                     mmCqParam_.k, mmCqParam_.kScale, scaleOffset, bufParam_);
+            } else if (parallelQkv_ && cubeBlockIdx_ < K3_Q_PROJ_CORES + K3_KV_PROJ_CORES) {
+                const uint64_t firstN = static_cast<uint64_t>(cubeBlockIdx_ - K3_Q_PROJ_CORES) * K3_KV_PROJ_N;
+                const uint64_t scaleOffset = MxScaleL1ByteOffset(mmCkvKrParam_) +
+                    mmCkvKrParam_.kScale * Align(mmCkvKrParam_.m, BLOCK_CUBE_SIZE);
+                LoadL1BAndScale(weightDkvKrGm_[firstN * mmCkvKrParam_.k],
+                    dequantScaleWDkvkrGm_[firstN * mmCkvKrParam_.kScale], K3_KV_PROJ_N,
+                    mmCkvKrParam_.kL1StepSize, mmCkvKrParam_.k, mmCkvKrParam_.kScale,
+                    scaleOffset, bufParam_);
             }
             CrossCoreWaitFlag(inputReady);
         }
@@ -930,7 +959,10 @@ __aicore__ inline void MlaPrologVecS1CubS2<MLAPT>::AicProcess(AicOffset &aicOffs
     CrossCoreWaitFlag(FINISH_VEC_CKVKR);
     MatmulSplitN<mmInputType, mmCkvKrOutputType, dequantScaleType, true>(
         mmCkvKrResGm_[aicOffset.ckvKrResOffset], tokenXGm_[tokenXOffset], weightDkvKrGm_[aicOffset.weightDkvKrOffset],
-        mmCkvKrParam_, UsedBlockParams{0, baseParams_->mm2BlockNum}, scaleAGm, scaleBGmDkvKr);
+        mmCkvKrParam_,
+        parallelQkv_ ? UsedBlockParams{K3_Q_PROJ_CORES, K3_Q_PROJ_CORES + K3_KV_PROJ_CORES}
+                     : UsedBlockParams{0, baseParams_->mm2BlockNum},
+        scaleAGm, scaleBGmDkvKr, parallelQkv_ && batchOffset == 0);
     CrossCoreSetFlag<SYNC_MODE_CUBE_VEC, PIPE_FIX>(FINISH_MM_CKVKR);
     CrossCoreWaitFlag(FINISH_VEC_RMSNORM_CQ);
 
@@ -1006,7 +1038,11 @@ __aicore__ inline void MlaPrologVecS1CubS2<MLAPT>::ComputeAicOffset(AicOffset &a
     aicOffset.dequantScaleWDqOffset =
         static_cast<int64_t>(baseParams_->headSizeX) / 32 * aicOffset.cqResOffset; // 7168 * 64 * idx
 
-    aicOffset.ckvKrResOffset = baseParams_->mm2SingleCoreN * blockIdx_; //  (512 + 64) / 9 * idx  = 64 * idx
+    aicOffset.ckvKrResOffset = baseParams_->mm2SingleCoreN * blockIdx_; // 64 * idx
+    if (parallelQkv_) {
+        aicOffset.ckvKrResOffset = blockIdx_ >= K3_Q_PROJ_CORES && blockIdx_ < K3_Q_PROJ_CORES + K3_KV_PROJ_CORES
+                                     ? (blockIdx_ - K3_Q_PROJ_CORES) * K3_KV_PROJ_N : 0;
+    }
     aicOffset.weightDkvKrOffset = static_cast<int64_t>(baseParams_->headSizeX) *
                                   aicOffset.ckvKrResOffset; // 7168 * (512 + 64) / 9 * idx = 7168 * 64 * idx
     aicOffset.dequantScaleWDkvKrOffset = static_cast<int64_t>(baseParams_->headSizeX) / 32 *
