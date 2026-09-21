@@ -161,6 +161,7 @@ public:
     }
 
 private:
+    bool wideSmallM_ = false;
     __aicore__ inline __gm__ SituTilingHeader *hdrOf(GM_ADDR tiling)
     {
         return reinterpret_cast<__gm__ SituTilingHeader *>(tiling);
@@ -181,13 +182,16 @@ private:
         glType_ = hdr_->reserved & 1U;
         weightListMode_ = (hdr_->reserved & TENSOR_LIST_FLAG) != 0;
 
-        basicBlock_.Init(WeightQuantBatchMatmulV2::Arch35::MX_GROUPSIZE, yGm_, yScaleGm_, hdr_->beta, hdr_->invBeta,
-                         hdr_->linearBeta, hdr_->invLinearBeta);
         // sv3_cont：模式判据在三核（AIC / AIV sub0 / AIV sub1）上由同一 tiling 头与同一
         // 组表内容独立推导，结果必然一致，无需额外同步；整个 launch 全程恒定。
         // nk_tile 合并：追加整 tile relay 64KB 包络上界（宽 tile 下 mL1>64 的 launch
         // 整体回退交错路径，见 GMSQ_DUAL_ROLE_RELAY_TILE_ELEMS 注释）。
         uint64_t maxL1M = MaxGroupL1M();
+        // Small expert batches use twice the N width at unchanged L1/L0 B capacity.
+        wideSmallM_ = maxL1M <= BLOCK_CUBE && hdr_->nSize % GQ::SMALL_M_N_L1_SIZE == 0 && hdr_->firstTailBlockCount == 0;
+        basicBlock_.Init(WeightQuantBatchMatmulV2::Arch35::MX_GROUPSIZE, yGm_, yScaleGm_, hdr_->beta, hdr_->invBeta,
+                         hdr_->linearBeta, hdr_->invLinearBeta, wideSmallM_);
+
         bool dualRoleMode =
             maxL1M >= GMSQ_DUAL_ROLE_M_THRESHOLD && maxL1M * (hdr_->mainBlockSize * 2ULL) <= GMSQ_DUAL_ROLE_RELAY_TILE_ELEMS;
         basicBlock_.SetDualRoleMode(dualRoleMode);
@@ -263,11 +267,13 @@ private:
         uint64_t curBasicBlockId =
             cubeBlockIdx >= startBasicBlockId ? cubeBlockIdx : cubeBlockIdx + hdr_->coreNum;
         uint64_t basicBlockLimit = startBasicBlockId;
+        const uint64_t mainBlockSize = wideSmallM_ ? GQ::SMALL_M_N_L1_SIZE / 2 : hdr_->mainBlockSize;
+        const uint64_t mainBlockCount = wideSmallM_ ? hdr_->nSize / GQ::SMALL_M_N_L1_SIZE : hdr_->mainBlockCount;
         for (uint64_t mOffset = 0; mOffset < mSize; mOffset += mL1Size) {
             uint64_t nOffset = 0;
             SplitNByMultiCore(cur, prev_, mSize, mL1Size, mOffset, curBasicBlockId, basicBlockLimit,
-                              hdr_->mainBlockCount, hdr_->mainBlockSize, nOffset);
-            basicBlockLimit += hdr_->mainBlockCount;
+                              mainBlockCount, mainBlockSize, nOffset);
+            basicBlockLimit += mainBlockCount;
             if (hdr_->firstTailBlockCount > 0) {
                 SplitNByMultiCore(cur, prev_, mSize, mL1Size, mOffset, curBasicBlockId, basicBlockLimit,
                                   hdr_->firstTailBlockCount, hdr_->firstTailBlockSize, nOffset);
@@ -322,7 +328,8 @@ private:
             }
 
             // 生产动态 k 切分规则：小 M 窄 N 走 512 深度 L1 k
-            cur.kbL1Size = (cur.mL1Size <= L1_K_M_THRESHOLD && cur.nL1Size <= L1_K_N_THRESHOLD) ? L1_K_512 : L1_K_256;
+            cur.kbL1Size = cur.nL1Size == GQ::SMALL_M_N_L1_SIZE ? GQ::SMALL_M_K_L1_SIZE :
+                (cur.mL1Size <= L1_K_M_THRESHOLD && cur.nL1Size <= L1_K_N_THRESHOLD) ? L1_K_512 : L1_K_256;
             uint64_t mL1Align = WQ::CeilAlign(cur.mL1Size, static_cast<uint64_t>(BLOCK_CUBE));
             uint64_t kaDepth = WQ::CeilDivide(cur.nL1Size, mL1Align * 2);
             uint64_t maxKaDepth = A_L1_BUFFER_ELEMS / (mL1Align * cur.kbL1Size);

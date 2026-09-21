@@ -45,7 +45,7 @@ class GMMSQWeightQuantVcvBasicBlock {
 public:
     __aicore__ inline GMMSQWeightQuantVcvBasicBlock() = default;
     __aicore__ inline void Init(uint64_t antiQuantGroupSize, __gm__ yType *y, __gm__ yScaleType *yScale,
-                            float beta, float invBeta, float linearBeta, float invLinearBeta);
+                            float beta, float invBeta, float linearBeta, float invLinearBeta, bool wideSmallM = false);
     __aicore__ inline void UpdateGlobalAddr(__gm__ xType *x, __gm__ wType *weight, __gm__ weightScaleType *weightScale,
                                             __gm__ xScaleType *xScale, __gm__ yType *y, __gm__ yScaleType *yScale,
                                             const bool weightL2Cacheable);
@@ -123,7 +123,7 @@ protected:
 GMMSQ_WQ_VCV_BASIC_BLOCK_TEMPLATE_PARAM
 __aicore__ inline void GMMSQ_WQ_VCV_BASIC_BLOCK_CLASS::Init(uint64_t antiQuantGroupSize, __gm__ yType *y,
                                                             __gm__ yScaleType *yScale, float beta, float invBeta,
-                                                            float linearBeta, float invLinearBeta)
+                                                            float linearBeta, float invLinearBeta, bool wideSmallM)
 {
     weightL1_ = LocalTensor<xType>(TPosition::TSCM, 0, L1_SIZE_BYTE / sizeof(xType));
 
@@ -138,7 +138,7 @@ __aicore__ inline void GMMSQ_WQ_VCV_BASIC_BLOCK_CLASS::Init(uint64_t antiQuantGr
     yF32Buffer_ = LocalTensor<float>(TPosition::LCM, ubOffset, highBitSize);
 
     if ASCEND_IS_AIC {
-        cubeCompute_.MxA8W4Init(l1RemainSize, l1StartSize);
+        cubeCompute_.MxA8W4Init(l1RemainSize, l1StartSize, wideSmallM);
         SetAicToAiv<PIPE_MTE1>(SYNC_AIC_AIV_FLAG);
         SetAicToAiv<PIPE_MTE1>(SYNC_AIC_AIV_FLAG);
     } else {

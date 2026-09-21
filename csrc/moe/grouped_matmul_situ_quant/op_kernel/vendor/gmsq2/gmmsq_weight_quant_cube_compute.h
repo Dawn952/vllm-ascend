@@ -49,7 +49,7 @@ public:
     __aicore__ inline GMMSQWeightQuantCubeCompute(){};
     __aicore__ inline void UpdateGlobalAddr(__gm__ xType *x, __gm__ yType *y, __gm__ weightScaleType *weightScale,
                                             __gm__ xScaleType *xScale);
-    __aicore__ inline void MxA8W4Init(uint64_t l1RemainSize, uint64_t l1StartSize);
+    __aicore__ inline void MxA8W4Init(uint64_t l1RemainSize, uint64_t l1StartSize, bool wideSmallM);
     __aicore__ inline void LaunchMatmul(const LocalTensor<xType> &weightL1, int64_t kbOffset, uint64_t kbL1RealSize,
                                         uint64_t kMutilLoadL1Size, const BasicBlockOffsetParam &param);
     __aicore__ inline void WaitMTE1ToMTE2(uint64_t kaGmOffset, const BasicBlockOffsetParam &offsetParam,
@@ -120,7 +120,7 @@ private:
 };
 
 GMMSQ_WQ_CUBE_COMPUTE_TEMPLATE_PARAM
-__aicore__ inline void GMMSQ_WQ_CUBE_COMPUTE_CLASS::MxA8W4Init(uint64_t l1RemainSize, uint64_t l1StartSize)
+__aicore__ inline void GMMSQ_WQ_CUBE_COMPUTE_CLASS::MxA8W4Init(uint64_t l1RemainSize, uint64_t l1StartSize, bool wideSmallM)
 {
     aL1Count_ = 0;
     aL1MaxHalfCount_ = 0;
@@ -132,9 +132,11 @@ __aicore__ inline void GMMSQ_WQ_CUBE_COMPUTE_CLASS::MxA8W4Init(uint64_t l1Remain
     l1StartSize += MX_SCALE_L1_SIZE;
 
     weightScaleBL1_ = LocalTensor<fp8_e8m0_t>(TPosition::TSCM, l1StartSize, l1RemainSize / sizeof(fp8_e8m0_t));
-    weightScaleBL1DbOffset_ = l1RemainSize - MX_SCALE_L1_SIZE;
-    l1RemainSize -= DOUBLE_BUFFER_NUM * MX_SCALE_L1_SIZE;
-    l1StartSize += MX_SCALE_L1_SIZE;
+    // N512 needs 64 KiB for the 4096-wide scale K window. Small M keeps A below 32 KiB.
+    const uint64_t weightScaleSize = wideSmallM ? MX_SCALE_L1_SIZE * 2 : MX_SCALE_L1_SIZE;
+    weightScaleBL1DbOffset_ = l1RemainSize - weightScaleSize;
+    l1RemainSize -= DOUBLE_BUFFER_NUM * weightScaleSize;
+    l1StartSize += weightScaleSize;
 
     aL1_ = LocalTensor<xType>(TPosition::TSCM, l1StartSize, l1RemainSize);
     aL1DbOffset_ = l1RemainSize >> 1;
@@ -315,7 +317,8 @@ __aicore__ inline void GMMSQ_WQ_CUBE_COMPUTE_CLASS::LaunchMatmul(const LocalTens
     L0CopyAndCalcParams l0CopyAndCalcParams;
     l0CopyAndCalcParams.mL0Size = param.mL1Size;
     l0CopyAndCalcParams.mL1Size = param.mL1Size;
-    uint64_t kL0Size = (param.mL1Size <= 128 && param.nL1Size <= 128) ? 256 : 128;
+    uint64_t kL0Size = param.nL1Size == SMALL_M_N_L1_SIZE ? SMALL_M_K_L0_SIZE :
+        (param.mL1Size <= 128 && param.nL1Size <= 128) ? 256 : 128;
     l0CopyAndCalcParams.kL1Size = param.kaL1Size;
     l0CopyAndCalcParams.nL0Size = param.nL1Size;
     l0CopyAndCalcParams.nL1Size = param.nL1Size;

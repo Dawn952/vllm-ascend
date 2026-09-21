@@ -57,6 +57,10 @@ static constexpr int32_t UNIT_FLAG_CHECK_ONLY = 2;  // 只检查标记位
 static constexpr uint64_t FIXP_DST_STRIDE = 256L;   // fixp搬出N方向stride固定256元素
 static constexpr AscendC::FixpipeConfig CFG_ROW_MAJOR_UB = {AscendC::CO2Layout::ROW_MAJOR, true};
 
+static constexpr uint64_t SMALL_M_N_L1_SIZE = 512;
+static constexpr uint64_t SMALL_M_K_L1_SIZE = 128;
+static constexpr uint64_t SMALL_M_K_L0_SIZE = 64;
+
 static constexpr uint64_t K_ALIGNMENT64 = 64UL; // 处理K轴非64对齐的场景
 
 struct L0CopyAndCalcParams {
