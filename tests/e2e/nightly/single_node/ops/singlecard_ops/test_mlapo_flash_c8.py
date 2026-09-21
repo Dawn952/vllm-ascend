@@ -210,3 +210,43 @@ def test_mxfp8_prolog_c8_zero_latent_preserves_bf16_component(zero_heads):
     torch.npu.synchronize()
     for left, right in zip(replayed[:3], actual[:3]):
         torch.testing.assert_close(left.float().cpu(), right.float().cpu(), rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("tokens,heads,kv_quant_mode", [(64, 96, 0), (32, 12, 1)])
+@torch.inference_mode()
+def test_bf16_input_mx_quant_matches_separate_quant(tokens, heads, kv_quant_mode):
+    """The input-quantized K3 prolog keeps FP8, KV and graph results exact."""
+    kwargs, _ = make_mxfp8_prolog_inputs(tokens, heads)
+    raw = torch.randn(tokens, 7168, dtype=torch.bfloat16, device="npu")
+    storage = torch.full((4, 2, 128, 640), 42, dtype=torch.uint8, device="npu")
+    if kv_quant_mode:
+        kv_cache, kr_cache = split_flash_mla_c8_cache(storage[:, 0].view(torch.float8_e4m3fn))
+        kwargs.update(kv_cache_quant_mode=1, query_quant_mode=1, quant_scale_ckv=torch.tensor([50.0], device="npu"))
+    else:
+        storage = torch.full((4, 2, 128, 576), 42, dtype=torch.bfloat16, device="npu")
+        kv_cache = storage[:, 0, :, :512].unsqueeze(2)
+        kr_cache = storage[:, 0, :, 512:].unsqueeze(2)
+    kwargs.update(kv_cache=kv_cache, kr_cache=kr_cache)
+    op = torch.ops._C_ascend.npu_mla_prolog_v3
+
+    for zero_input in (False, True):
+        if zero_input:
+            raw.zero_()
+        quantized, scales = torch_npu.npu_dynamic_mx_quant(raw, dst_type=torch.float8_e4m3fn, scale_alg=0)
+        kwargs.update(token_x=quantized, dequant_scale_x=scales.flatten(1).view(torch.float8_e8m0fnu))
+        expected = op(**kwargs)
+        torch.npu.synchronize()
+        expected_cache = [cache.cpu().float().clone() for cache in (kv_cache, kr_cache)]
+        kwargs.update(token_x=raw, dequant_scale_x=None)
+        actual = op(**kwargs)
+        graph = torch.npu.NPUGraph()
+        with torch.npu.graph(graph):
+            replayed = op(**kwargs)
+        graph.replay()
+        torch.npu.synchronize()
+        for outputs in (actual, replayed):
+            for left, right in zip(outputs, expected):
+                torch.testing.assert_close(left.cpu().float(), right.cpu().float(), rtol=0, atol=0)
+        for cache, reference in zip((kv_cache, kr_cache), expected_cache):
+            torch.testing.assert_close(cache.cpu().float(), reference, rtol=0, atol=0)
+        assert torch.all(storage[:, 1].cpu() == 42)

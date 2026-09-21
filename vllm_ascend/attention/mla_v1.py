@@ -2071,14 +2071,29 @@ class AscendMLAImpl(MLAAttentionImpl):
                 dequant_scale_w_dkv_kr = None
             else:
                 hidden_states = hidden_states.unsqueeze(1)
-                quantized_x, dynamic_scale = torch_npu.npu_dynamic_mx_quant(
-                    hidden_states,
-                    dst_type=torch.float8_e4m3fn,
-                    scale_alg=get_dynamic_mx_quant_scale_alg(self.vllm_config),
+                scale_alg = get_dynamic_mx_quant_scale_alg(self.vllm_config)
+                # K3's OCP input quantizer runs on AIV while AIC prefetches
+                # the first Wdq tile. Other algorithms and shapes keep the
+                # standalone quantizer and its existing FP8 input contract.
+                fuse_input_quant = (
+                    envs.VLLM_ASCEND_ENABLE_FLASH_MLA
+                    and not self.use_mla_rope
+                    and self.mlapo_weight_quant_mode == 3
+                    and scale_alg == 0
+                    and hidden_states.dtype == torch.bfloat16
+                    and hidden_states.shape[-1] == 7168
+                    and (bsz, self.mlapo_num_heads, quantize_prolog) in ((32, 12, True), (64, 96, False))
                 )
-                dequant_scale_x = dynamic_scale.reshape(quantized_x.shape[0] * quantized_x.shape[1], -1).view(
-                    torch.float8_e8m0fnu
-                )
+                if fuse_input_quant:
+                    quantized_x = hidden_states
+                    dequant_scale_x = None
+                else:
+                    quantized_x, dynamic_scale = torch_npu.npu_dynamic_mx_quant(
+                        hidden_states, dst_type=torch.float8_e4m3fn, scale_alg=scale_alg
+                    )
+                    dequant_scale_x = dynamic_scale.reshape(quantized_x.shape[0] * quantized_x.shape[1], -1).view(
+                        torch.float8_e8m0fnu
+                    )
                 dequant_scale_w_dq = self.dequant_scale_w_dq.view(torch.float8_e8m0fnu)
                 dequant_scale_w_uq_qr = self.dequant_scale_w_uq_qr.view(torch.float8_e8m0fnu)
                 dequant_scale_w_dkv_kr = self.dequant_scale_w_dkv_kr.view(torch.float8_e8m0fnu)

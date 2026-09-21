@@ -605,6 +605,10 @@ void MlaPrologTiling::FillTilingCoreParams()
 ge::graphStatus MlaPrologTiling::CalcWorkSpace()
 {
     workspaceSize_ = libapiSize_;
+    if (scenarioInfo_.weightQuantMode_ == WEIGHT_QUANT_MODE::MXFP8_FULL_QUANT &&
+        context_->tokenX.desc->GetDataType() == ge::DT_BF16) {
+        workspaceSize_ += static_cast<size_t>(baseShapeInfo_.tSize) * baseShapeInfo_.heSize * 33 / 32;
+    }
     uint32_t mm1Mult = (scenarioInfo_.splitMFlag_ == 1U) ? mm1BlockNum_ : 1U;
     uint32_t mm2Mult = (scenarioInfo_.splitMFlag_ == 1U) ? mm2BlockNum_ : 1U;
     uint32_t mm3Mult = (scenarioInfo_.splitMFlag_ == 1U) ? mm3BlockNum_ : 1U;

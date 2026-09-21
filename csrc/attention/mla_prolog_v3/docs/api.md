@@ -3,6 +3,12 @@
 本验证分支仅编译 Kimi-K3 A5 TP8 decode 使用的 MXFP8 权重、BF16 或 per-tensor FP8 KV、PA_BSND、NoPE、split-N 模板。该模板也覆盖 TP8/DCP8 replicated-Q 的 96 个 Q heads；V-up 和 O 投影仍使用本 TP rank 的 12 个 heads。
 下面的完整 API 描述保留用于参考；本分支产物不包含其他量化与布局模板。
 
+MXFP8 权重下还支持两种 BF16 原始输入：`T32/H12 + kv_cache_quant_mode=1` 和
+`T64/H96 + kv_cache_quant_mode=0`，隐层宽度均为 7168。此时 `dequant_scale_x=None`，
+算子内部使用 K3 的 OCP MX 量化（`scale_alg=0`），并与首块 Wdq 权重预取重叠。
+其他 shape、RoPE 或 scale_alg=1 仍由框架先量化，再使用原有 FP8 输入接口。
+BF16 输入不支持 split-M；原 FP8 输入接口的行为保持不变。
+
 ## 1. API 总览
 
 | 通路 | API/入口 | 支持情况 |
@@ -45,7 +51,7 @@
 | `kv_cache` | 必选（可变） | 见 2.4 CacheMode | BF16 / INT8 / FP8… | ND | \(k^C\) 原地更新 |
 | `kr_cache` | 必选（可变） | 见 2.4；`ckvkr_repo_mode=1` 时可为空 | BF16 / INT8 | ND | \(k^R\) 原地更新 |
 | `cache_index` | 条件必选 | PA：`(T,)` 或 `(B,S)` 等 | INT64 | ND | PA 写 cache 槽位；取值见 2.4 |
-| `dequant_scale_x` | 条件必选 | FULL/MXFP8/FP8/HIF8 必传 | FP32 / FP8_E8M0 | ND | `token_x` 反量化 |
+| `dequant_scale_x` | 条件必选 | FULL/MXFP8/FP8/HIF8 预量化输入必传；上述 BF16 输入传 None | FP32 / FP8_E8M0 | ND | `token_x` 反量化 |
 | `dequant_scale_w_dq` | 条件必选 | 同上 | FP32 / FP8_E8M0 | ND | `weight_dq` 反量化 |
 | `dequant_scale_w_uq_qr` | 条件必选 | PARTIAL 及以上必传 | FP32 / FP8_E8M0 | ND | `weight_uq_qr` 反量化 |
 | `dequant_scale_w_dkv_kr` | 条件必选 | FULL 及以上必传 | FP32 / FP8_E8M0 | ND | `weight_dkv_kr` 反量化 |

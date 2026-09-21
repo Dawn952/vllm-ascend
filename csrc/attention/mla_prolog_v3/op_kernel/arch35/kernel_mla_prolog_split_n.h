@@ -35,6 +35,9 @@ public:
     static constexpr bool isPertile = MLAPT::isPertile;
 
     using mmInputType = typename MLAPT::mmInputType;
+    // BF16 input uses the K3 OCP MX quantizer (scale_alg=0).
+    static constexpr bool inputQuant = std::is_same<DTYPE_TOKEN_X, bfloat16_t>::value &&
+        std::is_same<mmInputType, FP8E4M3>::value;
     using mmQcQrInputType = typename MLAPT::mmQcQrInputType;
     using mmQnInputType = typename MLAPT::mmQnInputType;
     using mmCqOutputType = typename MLAPT::mmCqOutputType;
@@ -84,6 +87,7 @@ private:
     __aicore__ inline void OutputInit(__gm__ uint8_t *actualSeqLen, __gm__ uint8_t *queryOut,
                                       __gm__ uint8_t *queryRopeOut, __gm__ uint8_t *dequantScaleQNopeOut,
                                       __gm__ uint8_t *queryNormOut, __gm__ uint8_t *dequantScaleQNormOut);
+    __aicore__ inline void InputQuantAndPrefetch();
     __aicore__ inline void ScaleInit(__gm__ uint8_t *dequantScaleX, __gm__ uint8_t *dequantScaleWDq,
                                      __gm__ uint8_t *deqScaleQcQrW, __gm__ uint8_t *dequantScaleWDkvkr,
                                      __gm__ uint8_t *quantScaleCkv, __gm__ uint8_t *quantScaleCkr,
@@ -112,7 +116,7 @@ private:
     __aicore__ inline void
     MatmulSplitN(const GlobalTensor<O> &tensorResGm, const GlobalTensor<T> &tensorAGm, const GlobalTensor<T> &tensorBGm,
                  const MMParams &mmPara, const UsedBlockParams &mmBlockParams,
-                 const GlobalTensor<S> &tensorAScaleGm = {}, const GlobalTensor<S> &tensorBScaleGm = {});
+                 const GlobalTensor<S> &tensorAScaleGm = {}, const GlobalTensor<S> &tensorBScaleGm = {}, bool firstBReady = false);
     __aicore__ inline void MatmulAndSyncQcQr(AicOffset &aicOffset);
     __aicore__ inline void MatmulQcQr(AicOffset &aicOffset, int64_t batchOffset = 0);
     __aicore__ inline void PreloadQnAndSync(AicOffset &aicOffset, int64_t mmQnLoops);
@@ -198,6 +202,7 @@ private:
 
     // GM
     GlobalTensor<mmInputType> tokenXGm_;
+    GlobalTensor<bfloat16_t> rawTokenXGm_;
     GlobalTensor<mmInputType> weightDqGm_;
     GlobalTensor<mmQcQrInputType> weightUqQrGm_;
     GlobalTensor<mmQnInputType> weightUkGm_;
@@ -306,6 +311,9 @@ __aicore__ inline void MlaPrologVecS1CubS2<MLAPT>::Init(
     enableSmoothScalesCq_ = smoothScaleCq == nullptr ? false : true;
     // GM
     tokenXGm_.SetGlobalBuffer((__gm__ mmInputType *)tokenX);
+    if constexpr (inputQuant) {
+        rawTokenXGm_.SetGlobalBuffer((__gm__ bfloat16_t *)tokenX);
+    }
     weightDqGm_.SetGlobalBuffer((__gm__ mmInputType *)weightDq);         // NZ
     weightUqQrGm_.SetGlobalBuffer((__gm__ mmQcQrInputType *)weightUqQr); // NZ
     weightUkGm_.SetGlobalBuffer((__gm__ mmQnInputType *)weightUk);
@@ -678,6 +686,12 @@ template <typename MLAPT>
 __aicore__ inline void MlaPrologVecS1CubS2<MLAPT>::WorkspaceInit(__gm__ uint8_t *workspace)
 {
     int64_t workspaceOffset = 0;
+    if constexpr (inputQuant) {
+        tokenXGm_.SetGlobalBuffer((__gm__ mmInputType *)workspace);
+        workspaceOffset = static_cast<int64_t>(baseParams_->tokenSize) * baseParams_->headSizeX;
+        dequantScaleXGm_.SetGlobalBuffer((__gm__ dequantScaleType *)(workspace + workspaceOffset));
+        workspaceOffset += static_cast<int64_t>(baseParams_->tokenSize) * baseParams_->headSizeX / 32;
+    }
     if constexpr (std::is_same<rmsNormCqOutputType, FP8E4M3>::value && isFp8E8m0) {
         dequantScaleCqSize_ = baseParams_->headSizeCq / FP8_E4M3_BLOCK_SIZE;
     }
@@ -766,9 +780,58 @@ __aicore__ inline void MlaPrologVecS1CubS2<MLAPT>::UpdateStepBatchParams(int64_t
  *    query_out               query_rope_out
  * 注：仅为表明基本计算与CV同步流程，仅包含了影响CV同步的量化分支，其余量化分支应参考设计文档。
  */
+// The input is shared by MM1 and MM2. Quantize it once; all vector
+// writes become visible before the AICs consume A. The first Wdq tile
+// and its scales occupy the normal L1B ping buffer while AIV quantizes.
+template <typename MLAPT>
+__aicore__ inline void MlaPrologVecS1CubS2<MLAPT>::InputQuantAndPrefetch()
+{
+    if constexpr (!inputQuant) {
+        return;
+    } else {
+        constexpr uint16_t inputReady = 0xB;
+        if ASCEND_IS_AIV {
+            const uint32_t width = baseParams_->headSizeX;
+            const uint32_t scales = width / 32;
+            auto input = shareBuffer_.Get<bfloat16_t>();
+            auto output = shareBuffer_.Get<int8_t>()[width * 2];
+            auto scale = shareBuffer_.Get<uint16_t>()[width * 3 / 2];
+            const uint32_t tmpOffset = Align(width * 3 + scales, 32U);
+            auto tmp = shareBuffer_.Get<uint8_t>()[tmpOffset];
+            for (uint32_t row = blockIdx_; row < baseParams_->tokenSize; row += vectorCoreNum_) {
+                DataCopy(input, rawTokenXGm_[static_cast<uint64_t>(row) * width], width);
+                SetFlag<HardEvent::MTE2_V>(EVENT_ID0);
+                WaitFlag<HardEvent::MTE2_V>(EVENT_ID0);
+                DynamicQuantPerBlockMxfp8Vf<bfloat16_t, FP8E4M3>(output, scale, input, tmp, 1, width);
+                SetFlag<HardEvent::V_MTE3>(EVENT_ID0);
+                WaitFlag<HardEvent::V_MTE3>(EVENT_ID0);
+                DataCopy(tokenXGm_[static_cast<uint64_t>(row) * width], output.template ReinterpretCast<mmInputType>(), width);
+                DataCopy(dequantScaleXGm_[static_cast<uint64_t>(row) * scales],
+                         scale.template ReinterpretCast<dequantScaleType>(), scales);
+                SetFlag<HardEvent::MTE3_V>(EVENT_ID0);
+                WaitFlag<HardEvent::MTE3_V>(EVENT_ID0);
+            }
+            WaitAllCore<SYNC_MODE_ALL_VEC, PIPE_MTE3>(FINISH_VEC_ALL);
+            CrossCoreSetFlag<SYNC_MODE_CUBE_VEC, PIPE_MTE3>(inputReady);
+        } else {
+            if (cubeBlockIdx_ < baseParams_->mm1BlockNum) {
+                const uint64_t firstN = static_cast<uint64_t>(cubeBlockIdx_) * baseParams_->mm1SingleCoreN;
+                const uint64_t scaleOffset = MxScaleL1ByteOffset(mmCqParam_) +
+                    mmCqParam_.kScale * Align(mmCqParam_.m, BLOCK_CUBE_SIZE);
+                LoadL1BAndScale(weightDqGm_[firstN * mmCqParam_.k],
+                    dequantScaleWDqGm_[firstN * mmCqParam_.kScale],
+                    (mmCqParam_.baseN < mmCqParam_.n ? mmCqParam_.baseN : mmCqParam_.n), mmCqParam_.kL1StepSize,
+                    mmCqParam_.k, mmCqParam_.kScale, scaleOffset, bufParam_);
+            }
+            CrossCoreWaitFlag(inputReady);
+        }
+    }
+}
+
 template <typename MLAPT>
 __aicore__ inline void MlaPrologVecS1CubS2<MLAPT>::Process()
 {
+    InputQuantAndPrefetch();
     constexpr bool needQnDynamicQuant =
         ((std::is_same<mmInputType, int8_t>::value && std::is_same<kvCacheType, int8_t>::value) ||
          (std::is_same<mmInputType, FP8E4M3>::value && std::is_same<kvCacheType, FP8E4M3>::value) ||
@@ -859,7 +922,7 @@ __aicore__ inline void MlaPrologVecS1CubS2<MLAPT>::AicProcess(AicOffset &aicOffs
     // [32, 7168] * [7168, 1536] = [32, 1536]
     MatmulSplitN<mmInputType, mmCqOutputType, dequantScaleType>(
         mmCqResGm_[aicOffset.cqResOffset], tokenXGm_[tokenXOffset], weightDqGm_[aicOffset.weightDqOffset], mmCqParam_,
-        UsedBlockParams{0, baseParams_->mm1BlockNum}, scaleAGm, scaleBGmDq);
+        UsedBlockParams{0, baseParams_->mm1BlockNum}, scaleAGm, scaleBGmDq, inputQuant && batchOffset == 0);
     CrossCoreSetFlag<SYNC_MODE_CUBE_VEC, PIPE_FIX>(FINISH_MM_CQ);
     // MatmulCkvKr ──> RmsNorm(Ckv)
     //            └──> Rope(Kr)
@@ -1041,7 +1104,7 @@ __aicore__ inline void
 MlaPrologVecS1CubS2<MLAPT>::MatmulSplitN(const GlobalTensor<O> &tensorResGm, const GlobalTensor<T> &tensorAGm,
                                          const GlobalTensor<T> &tensorBGm, const MMParams &mmPara,
                                          const UsedBlockParams &mmBlockParams, const GlobalTensor<S> &tensorAScaleGm,
-                                         const GlobalTensor<S> &tensorBScaleGm)
+                                         const GlobalTensor<S> &tensorBScaleGm, bool firstBReady)
 {
     if constexpr (needCheckEmptyTensor && MLAPT::emptyMode == EMPTY_TENSOR_MODE::EMPTY_CACHE) {
         return;
@@ -1069,7 +1132,7 @@ MlaPrologVecS1CubS2<MLAPT>::MatmulSplitN(const GlobalTensor<O> &tensorResGm, con
             subNL1SplitSize = nInput - (nL1loops - 1) * nL1SplitSize;
         }
         MatmulSplitK<T, O, S>(tensorResGm, tensorAGm, tensorBGm, mmPara, bufParam_, nL1 * nL1SplitSize, subNL1SplitSize,
-                              tensorAScaleGm, tensorBScaleGm);
+                              tensorAScaleGm, tensorBScaleGm, {}, {}, firstBReady && nL1 == 0);
     }
 }
 

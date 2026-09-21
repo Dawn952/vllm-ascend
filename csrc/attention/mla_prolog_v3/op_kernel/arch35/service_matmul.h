@@ -478,7 +478,7 @@ template <typename T, typename S, bool hasL1ALoaded, bool scaleSrcPadFlag = fals
 __aicore__ inline void LoadL1ABAndScale(const GlobalTensor<T> &tensorAGm, const GlobalTensor<T> &tensorBGm,
                                         const GlobalTensor<S> &tensorAScaleGm, const GlobalTensor<S> &tensorBScaleGm,
                                         uint32_t kL1, uint32_t kL1Loops, const MMParams &para, uint32_t nL1Offset,
-                                        uint32_t nL1Size, uint32_t kOffesetUnit, MMBufParams &bufParam)
+                                        uint32_t nL1Size, uint32_t kOffesetUnit, MMBufParams &bufParam, bool firstBReady = false)
 {
     uint64_t offsetL1B = MxScaleL1ByteOffset(para) / sizeof(T); // Scales follow the current tile weights in L1B ping.
     if (kL1 == 0) {
@@ -487,8 +487,10 @@ __aicore__ inline void LoadL1ABAndScale(const GlobalTensor<T> &tensorAGm, const 
                                                                  para.k, para.kScale, offsetL1B, bufParam);
         }
         uint64_t scaleOffsetL1B = offsetL1B + para.kScale * Align(para.m, BLOCK_CUBE_SIZE);
-        LoadL1BAndScale(tensorBGm[para.k * nL1Offset], tensorBScaleGm[para.kScale * nL1Offset], nL1Size,
-                        para.kL1StepSize, para.k, para.kScale, scaleOffsetL1B, bufParam);
+        if (!firstBReady) {
+            LoadL1BAndScale(tensorBGm[para.k * nL1Offset], tensorBScaleGm[para.kScale * nL1Offset], nL1Size,
+                            para.kL1StepSize, para.k, para.kScale, scaleOffsetL1B, bufParam);
+        }
     }
 
     if (kL1 + 1 < kL1Loops) {
@@ -607,7 +609,8 @@ __aicore__ inline void
 MatmulSplitK(const GlobalTensor<O> &tensorCGm, const GlobalTensor<T> &tensorAGm, const GlobalTensor<T> &tensorBGm,
              const MMParams &para, MMBufParams &bufParam, const uint32_t nL1Offset, const uint32_t nL1Size,
              const GlobalTensor<S> &tensorAScaleGm = {}, const GlobalTensor<S> &tensorBScaleGm = {},
-             const GlobalTensor<bfloat16_t> &qcGm = {}, const GlobalTensor<bfloat16_t> &qrGm = {})
+             const GlobalTensor<bfloat16_t> &qcGm = {}, const GlobalTensor<bfloat16_t> &qrGm = {},
+             bool firstBReady = false)
 {
     using O_L0C = typename std::conditional<std::is_same<T, int8_t>::value, int32_t, float>::type;
 
@@ -640,7 +643,7 @@ MatmulSplitK(const GlobalTensor<O> &tensorCGm, const GlobalTensor<T> &tensorAGm,
         if constexpr (std::is_same<T, FP8E4M3>::value && std::is_same<S, fp8_e8m0_t>::value) {
             LoadL1ABAndScale<T, S, hasL1ALoaded, scaleSrcPadFlag>(tensorAGm, tensorBGm, tensorAScaleGm, tensorBScaleGm,
                                                                   kL1, kL1Loops, para, nL1Offset, nL1Size, kOffesetUnit,
-                                                                  bufParam);
+                                                                  bufParam, firstBReady);
         } else {
             LoadL1AB<T, hasL1ALoaded, bLoadFormat>(tensorAGm, tensorBGm, kL1, kL1Loops, para, nL1Offset, nL1Size,
                                                    kOffesetUnit, bufParam);
