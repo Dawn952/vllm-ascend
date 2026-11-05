@@ -169,7 +169,7 @@ int main() {
 #include <cassert>
 #include <limits>
 #include "csrc/attention/attn_res_fwd/op_host/attn_res_fwd_parallel_plan.h"
-#include "csrc/attention/attn_res_fwd/attn_res_fwd_validation.h"
+#include "csrc/attention/attn_res_fwd/op_host/attn_res_fwd_check.h"
 using namespace AttnResFwd;
 int main() {
     constexpr int64_t u32max = std::numeric_limits<uint32_t>::max();

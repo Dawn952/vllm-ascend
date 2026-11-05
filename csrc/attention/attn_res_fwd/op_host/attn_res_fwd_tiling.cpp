@@ -15,7 +15,7 @@
 #include "attn_res_fwd_tiling.h"
 #include "attn_res_fwd_parallel_plan.h"
 #include "attn_res_fwd_legacy_plan.h"
-#include "../attn_res_fwd_validation.h"
+#include "attn_res_fwd_check.h"
 
 #include <algorithm>
 #include <cstring>
