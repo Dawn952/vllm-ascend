@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "aclnn_attn_res_fwd.h"
 #include <limits>
-#include "../../attn_res_fwd_validation.h"
+#include "../attn_res_fwd_check.h"
 #include "opdev/make_op_executor.h"
 #include "opdev/op_def.h"
 #include "opdev/op_dfx.h"

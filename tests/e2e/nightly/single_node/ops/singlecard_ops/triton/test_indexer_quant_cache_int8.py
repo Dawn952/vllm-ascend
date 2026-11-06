@@ -9,6 +9,7 @@ import statistics
 import pytest
 import torch
 import torch_npu
+from vllm.model_executor.warmup.jit_warmup import JitWarmupRegistry
 
 from vllm_ascend.attention.indexer import AscendSFAIndexerBackend
 from vllm_ascend.device.device_config import uses_native_int8_sparse_adaptor
@@ -97,6 +98,33 @@ def assert_matches_native(cache, x, host_slots, initial):
 def snapshot(cache):
     key, scale, backing = cache
     return backing.cpu().clone() if backing is not None else (key.cpu().clone(), scale.cpu().clone())
+
+
+@pytest.mark.parametrize("paired", [False, True])
+@torch.inference_mode()
+def test_warmup_covers_all_token_counts(monkeypatch, paired):
+    cache = make_cache(paired)
+    key, scale, _ = cache
+    registry = JitWarmupRegistry(None)
+    with registry.activate():
+        kernels._INDEXER_QUANT_CACHE_INT8_KERNEL.register_warmup(
+            cache_shape=tuple(key.shape[:2]), key_page_stride=key.stride(0), scale_page_stride=scale.stride(0)
+        )
+    registry.warmup()
+
+    def unexpected_compile(*args, **kwargs):
+        raise AssertionError("Indexer cache kernel compiled after warmup")
+
+    monkeypatch.setattr(kernels._indexer_quant_cache_int8_kernel, "_do_compile", unexpected_compile)
+    x = torch.randn(kernels.MAX_FUSED_TOKENS, kernels.HEAD_DIM, dtype=torch.bfloat16, device="npu")
+    for slot_dtype in (torch.int32, torch.int64):
+        storage = torch.arange(kernels.MAX_FUSED_TOKENS + 1, dtype=slot_dtype, device="npu")
+        for offset in (0, 1):
+            slots = storage[offset : offset + kernels.MAX_FUSED_TOKENS]
+            initial = snapshot(cache)
+            for tokens in range(1, kernels.MAX_FUSED_TOKENS + 1):
+                indexer_quant_cache_int8(key, scale, x[:tokens], slots[:tokens])
+            assert_matches_native(cache, x, slots.cpu(), initial)
 
 
 @pytest.mark.parametrize("tokens", [1, 3, 16, 17, 48, 127, 128])

@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <cstdint>
 
-#include "../attn_res_fwd_validation.h"
+#include "attn_res_fwd_check.h"
 #include "../op_kernel/attn_res_fwd_ub_layout.h"
 
 namespace AttnResFwd {
