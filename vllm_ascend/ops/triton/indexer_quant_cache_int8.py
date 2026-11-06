@@ -2,8 +2,15 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Fuse native INT8 indexer K quantization and paged K/FP16-scale writes."""
 
+from dataclasses import dataclass
+from typing import Any
+
 import torch
+from vllm.model_executor.warmup.jit_warmup import kernel_launcher
+from vllm.model_executor.warmup.jit_warmup_triton_helper import LaunchSpec, TritonWarmupTensor
 from vllm.triton_utils import tl, triton
+
+from vllm_ascend.ops.triton.ascend_jit_warmup import AscendTritonJitKernel
 
 HEAD_DIM = 128
 DMA_BLOCK_BYTES = 32
@@ -38,7 +45,7 @@ def supports_indexer_quant_cache_int8(key: torch.Tensor, scale: torch.Tensor, nu
     )
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["num_tokens"])
 def _write_indexer_cache_block(
     key_ptr,
     scale_ptr,
@@ -46,7 +53,7 @@ def _write_indexer_cache_block(
     source_slots,
     source_rows,
     first_slot,
-    NUM_TOKENS: tl.constexpr,
+    num_tokens,
     PAGE_SIZE: tl.constexpr,
     KEY_PAGE_STRIDE: tl.constexpr,
     SCALE_PAGE_STRIDE: tl.constexpr,
@@ -59,10 +66,10 @@ def _write_indexer_cache_block(
 ):
     lanes = tl.arange(0, SCALES_PER_BLOCK)
     columns = tl.arange(0, HEAD_SIZE)
-    matches = (source_slots[None, :] == first_slot + lanes[:, None]) & (source_rows[None, :] < NUM_TOKENS)
+    matches = (source_slots[None, :] == first_slot + lanes[:, None]) & (source_rows[None, :] < num_tokens)
     rows = tl.min(tl.where(matches, source_rows[None, :], INPUT_ROWS), axis=1)
-    active = rows < NUM_TOKENS
-    safe_rows = tl.minimum(rows, NUM_TOKENS - 1)
+    active = rows < num_tokens
+    safe_rows = tl.minimum(rows, num_tokens - 1)
     x = tl.load(
         x_ptr + safe_rows[:, None] * X_ROW_STRIDE + columns[None, :] * X_COL_STRIDE,
         active[:, None],
@@ -93,13 +100,13 @@ def _write_indexer_cache_block(
     tl.store(scale_addresses, tl.where(active, scale.to(tl.float16), old_scale))
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["num_tokens"])
 def _indexer_quant_cache_int8_kernel(
     key_ptr,
     scale_ptr,
     x_ptr,
     slots_ptr,
-    NUM_TOKENS: tl.constexpr,
+    num_tokens,
     NUM_SLOTS: tl.constexpr,
     PAGE_SIZE: tl.constexpr,
     KEY_PAGE_STRIDE: tl.constexpr,
@@ -116,16 +123,12 @@ def _indexer_quant_cache_int8_kernel(
     slot = tl.load(slots_ptr + program * SLOT_STRIDE).to(tl.int64)
     if (slot >= 0) & (slot < NUM_SLOTS):
         source_rows = tl.arange(0, INPUT_ROWS)
-        source_slots = tl.load(
-            slots_ptr + source_rows * SLOT_STRIDE, source_rows < NUM_TOKENS, other=-1
-        ).to(tl.int64)
+        source_slots = tl.load(slots_ptr + source_rows * SLOT_STRIDE, source_rows < num_tokens, other=-1).to(tl.int64)
         # Pages and scale page strides are multiples of a 32-byte scale block.
         # Thus each logical group of 16 slots maps to one complete physical block.
         first_slot = (slot // SCALES_PER_BLOCK) * SCALES_PER_BLOCK
         in_block = (
-            (source_rows < NUM_TOKENS)
-            & (source_slots >= first_slot)
-            & (source_slots < first_slot + SCALES_PER_BLOCK)
+            (source_rows < num_tokens) & (source_slots >= first_slot) & (source_slots < first_slot + SCALES_PER_BLOCK)
         )
         leader = tl.min(tl.where(in_block, source_rows, INPUT_ROWS), axis=0)
         if program == leader:
@@ -136,7 +139,7 @@ def _indexer_quant_cache_int8_kernel(
                 source_slots,
                 source_rows,
                 first_slot,
-                NUM_TOKENS,
+                num_tokens,
                 PAGE_SIZE,
                 KEY_PAGE_STRIDE,
                 SCALE_PAGE_STRIDE,
@@ -146,6 +149,89 @@ def _indexer_quant_cache_int8_kernel(
                 HEAD_SIZE,
                 SCALES_PER_BLOCK,
                 QUANT_MAX,
+            )
+
+
+class IndexerQuantCacheInt8Kernel(AscendTritonJitKernel["IndexerQuantCacheInt8Kernel.CompileKey"]):
+    kernel = _indexer_quant_cache_int8_kernel
+    bind_launch_inputs = False
+
+    @dataclass(frozen=True)
+    class CompileKey:
+        cache_shape: tuple[int, int]
+        key_page_stride: int
+        scale_page_stride: int
+        input_rows: int
+        slot_dtype: torch.dtype
+        slots_aligned: bool
+
+    def get_warmup_keys(
+        self, *, cache_shape: tuple[int, int], key_page_stride: int, scale_page_stride: int
+    ) -> list[CompileKey]:
+        return [
+            self.CompileKey(cache_shape, key_page_stride, scale_page_stride, 1 << exponent, dtype, aligned)
+            for exponent in range(MAX_FUSED_TOKENS.bit_length())
+            for dtype in (torch.int32, torch.int64)
+            for aligned in (True, False)
+        ]
+
+    def warmup_inputs(self, compile_key: CompileKey) -> dict[str, Any]:
+        key = compile_key
+        return dict(
+            key_cache=TritonWarmupTensor(
+                torch.int8,
+                shape=(*key.cache_shape, 1, HEAD_DIM),
+                strides=(key.key_page_stride, HEAD_DIM, HEAD_DIM, 1),
+            ),
+            scale_cache=TritonWarmupTensor(
+                torch.float16, shape=(*key.cache_shape, 1, 1), strides=(key.scale_page_stride, 1, 1, 1)
+            ),
+            # The Hadamard matmul produces dense, aligned BF16 rows. Slot
+            # slices are contiguous but can start at an unaligned offset.
+            x=TritonWarmupTensor(torch.bfloat16, shape=(key.input_rows, HEAD_DIM)),
+            slots=TritonWarmupTensor(key.slot_dtype, aligned=key.slots_aligned, shape=(key.input_rows,)),
+        )
+
+    @kernel_launcher
+    def __call__(
+        self, key_cache: torch.Tensor, scale_cache: torch.Tensor, x: torch.Tensor, slots: torch.Tensor
+    ) -> LaunchSpec:
+        return (x.shape[0],), dict(
+            key_ptr=key_cache,
+            scale_ptr=scale_cache,
+            x_ptr=x,
+            slots_ptr=slots,
+            num_tokens=x.shape[0],
+            NUM_SLOTS=key_cache.shape[0] * key_cache.shape[1],
+            PAGE_SIZE=key_cache.shape[1],
+            KEY_PAGE_STRIDE=key_cache.stride(0),
+            SCALE_PAGE_STRIDE=scale_cache.stride(0),
+            X_ROW_STRIDE=x.stride(0),
+            X_COL_STRIDE=x.stride(1),
+            SLOT_STRIDE=slots.stride(0),
+            INPUT_ROWS=triton.next_power_of_2(x.shape[0]),
+            HEAD_SIZE=HEAD_DIM,
+            SCALES_PER_BLOCK=SCALES_PER_DMA_BLOCK,
+            QUANT_MAX=127.0,
+        )
+
+
+_INDEXER_QUANT_CACHE_INT8_KERNEL = IndexerQuantCacheInt8Kernel()
+
+
+def register_indexer_quant_cache_warmup(static_forward_context: dict[str, Any]) -> None:
+    """Register the bound A3 cache layouts before graph capture."""
+    for layer in static_forward_context.values():
+        indexer = getattr(getattr(layer, "impl", None), "indexer", None)
+        backend = getattr(indexer, "impl", None)
+        if getattr(backend, "_fused_k_cache", None) is not indexer_quant_cache_int8 or backend._pcp_active:
+            continue
+        key, scale = backend.k_cache.kv_cache
+        if supports_indexer_quant_cache_int8(key, scale, 1):
+            _INDEXER_QUANT_CACHE_INT8_KERNEL.register_warmup(
+                cache_shape=tuple(key.shape[:2]),
+                key_page_stride=key.stride(0),
+                scale_page_stride=scale.stride(0),
             )
 
 
@@ -175,21 +261,4 @@ def indexer_quant_cache_int8(
     if x.shape[0] == 0:
         return
     assert supports_indexer_quant_cache_int8(key_cache, scale_cache, x.shape[0])
-    _indexer_quant_cache_int8_kernel[(x.shape[0],)](
-        key_cache,
-        scale_cache,
-        x,
-        slots,
-        NUM_TOKENS=x.shape[0],
-        NUM_SLOTS=key_cache.shape[0] * key_cache.shape[1],
-        PAGE_SIZE=key_cache.shape[1],
-        KEY_PAGE_STRIDE=key_cache.stride(0),
-        SCALE_PAGE_STRIDE=scale_cache.stride(0),
-        X_ROW_STRIDE=x.stride(0),
-        X_COL_STRIDE=x.stride(1),
-        SLOT_STRIDE=slots.stride(0),
-        INPUT_ROWS=triton.next_power_of_2(x.shape[0]),
-        HEAD_SIZE=HEAD_DIM,
-        SCALES_PER_BLOCK=SCALES_PER_DMA_BLOCK,
-        QUANT_MAX=127.0,
-    )
+    _INDEXER_QUANT_CACHE_INT8_KERNEL(key_cache, scale_cache, x, slots)

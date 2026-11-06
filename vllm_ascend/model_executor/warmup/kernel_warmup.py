@@ -172,9 +172,11 @@ def kernel_warmup(worker: NPUWorker) -> None:
     # State-copy keys include the final local cache layout/alignment, which is
     # unavailable during model construction. Both runners bind plans before here.
     from vllm_ascend.ops.kda_state_copy_plan import register_kda_state_copy_warmup
+    from vllm_ascend.ops.triton.indexer_quant_cache_int8 import register_indexer_quant_cache_warmup
 
     with registry.activate():
         register_kda_state_copy_warmup(worker.vllm_config.compilation_config.static_forward_context)
+        register_indexer_quant_cache_warmup(worker.vllm_config.compilation_config.static_forward_context)
 
     dspark_registered = _register_dspark_swa_indices_warmup(worker)
     pruned = _prune_unlaunchable_registrations(registry)
