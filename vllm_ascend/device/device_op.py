@@ -26,7 +26,6 @@ import torch_npu
 from vllm.triton_utils import HAS_TRITON
 
 from vllm_ascend.device import utils as device_utils
-from vllm_ascend.device.device_config import uses_native_int8_sparse_adaptor
 from vllm_ascend.device.hardware_profile import DeviceAdaptorFamily, HardwareCapability, get_current_hardware_profile
 from vllm_ascend.device.paged_mla_cache_read import try_load_strided_mla_cache
 from vllm_ascend.ops.triton.fla.chunk_scaled_dot_kkt import chunk_scaled_dot_kkt_fwd_kernel
@@ -67,7 +66,7 @@ class BaseDeviceAdaptor:
         cp_rank: int,
         cp_kv_cache_interleave_size: int,
     ) -> torch.Tensor:
-        if not uses_native_int8_sparse_adaptor(get_current_hardware_profile()):
+        if not get_current_hardware_profile().supports(HardwareCapability.NATIVE_INT8_SPARSE):
             raise NotImplementedError("Owner-local INT8 QLI metadata requires the A3 native QLI kernel")
         return torch.ops._C_ascend.npu_quant_lightning_indexer_v2_metadata(
             num_heads_q,
@@ -111,7 +110,7 @@ class BaseDeviceAdaptor:
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Select owner-local causal candidates with the A3 QLI DCP kernel."""
         if (
-            not uses_native_int8_sparse_adaptor(get_current_hardware_profile())
+            not get_current_hardware_profile().supports(HardwareCapability.NATIVE_INT8_SPARSE)
             or q_li.dtype != torch.int8
             or kv_cache.dtype != torch.int8
         ):
@@ -161,7 +160,7 @@ class BaseDeviceAdaptor:
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Select native INT8 candidates from each query's causal local prefix."""
         if (
-            not uses_native_int8_sparse_adaptor(get_current_hardware_profile())
+            not get_current_hardware_profile().supports(HardwareCapability.NATIVE_INT8_SPARSE)
             or q_li.dtype != torch.int8
             or kv_cache.dtype != torch.int8
         ):

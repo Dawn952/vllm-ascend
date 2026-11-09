@@ -69,8 +69,8 @@ def load_sparse_config_type(use_int8_adaptor=True):
     namespace = {
         "Any": Any,
         "extract_layer_index": extract_layer_index,
-        "uses_native_int8_sparse_adaptor": lambda profile: use_int8_adaptor,
-        "get_current_hardware_profile": lambda: SimpleNamespace(),
+        "HardwareCapability": SimpleNamespace(NATIVE_INT8_SPARSE=object()),
+        "get_current_hardware_profile": lambda: SimpleNamespace(supports=lambda capability: use_int8_adaptor),
     }
     exec(compile(ast.fix_missing_locations(module), str(source), "exec"), namespace)
     return namespace["AscendConfig"]

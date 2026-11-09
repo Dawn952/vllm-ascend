@@ -29,7 +29,7 @@ from vllm.logger import logger
 from vllm.utils.math_utils import cdiv
 
 from vllm_ascend.config_utils import config
-from vllm_ascend.device.device_config import is_950, uses_native_int8_sparse_adaptor
+from vllm_ascend.device.device_config import is_950
 from vllm_ascend.device.hardware_profile import DeviceAdaptorFamily, HardwareCapability, get_current_hardware_profile
 
 if TYPE_CHECKING:
@@ -144,7 +144,7 @@ class AscendCompilationConfig:
 
     @model_validator(mode="after")
     def _apply_unsupported_hardware_downgrade_and_static_kernel_check(self):
-        from vllm_ascend.device.hardware_profile import get_current_hardware_profile
+        from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
 
         if not get_current_hardware_profile().supports(HardwareCapability.NPUGRAPH_EX):
             if self.enable_npugraph_ex:
@@ -891,7 +891,7 @@ class AscendConfig:
             # not indexer.quant_type. Treat it as C8 only when explicitly
             # requested; W8A8 projection alone does not imply a C8 cache.
             ("INT8_DYNAMIC", "W8A8_MXFP8", "W8A8_DYNAMIC")
-            if uses_native_int8_sparse_adaptor(get_current_hardware_profile())
+            if get_current_hardware_profile().supports(HardwareCapability.NATIVE_INT8_SPARSE)
             and vllm_config.attention_config.indexer_kv_dtype == "int8"
             else ("INT8_DYNAMIC", "W8A8_MXFP8"),
         )
@@ -947,7 +947,7 @@ class AscendConfig:
         )
 
     def _validate_mc2_comm_alg(self, vllm_config: VllmConfig) -> None:
-        from vllm_ascend.device.hardware_profile import get_current_hardware_profile
+        from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
 
         hardware_profile = get_current_hardware_profile()
         if self.mc2_comm_alg == "fullmesh_v2" and not hardware_profile.supports(
@@ -1200,7 +1200,7 @@ class AscendConfig:
             # A projection's quantization does not override an explicit
             # indexer cache rollback, such as quant_type="FLOAT".
             if (
-                uses_native_int8_sparse_adaptor(get_current_hardware_profile())
+                get_current_hardware_profile().supports(HardwareCapability.NATIVE_INT8_SPARSE)
                 and matched_suffix == ".indexer.wq_b.weight"
                 and f"{layer_name}.indexer.quant_type" in quant_description
             ):
@@ -1267,7 +1267,7 @@ class AscendConfig:
         return
 
     def get_mc2_comm_alg(self) -> str:
-        from vllm_ascend.device.hardware_profile import get_current_hardware_profile
+        from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
 
         # When A3 and comm_alg == "fullmesh", dispatch/combine op need pass in "fullmesh_v1" instead of "fullmesh"
         # TODO(zzzzwwjj): Remove it when op's param is uniformed between A2/A3/A5.

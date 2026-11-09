@@ -5,17 +5,11 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from vllm_ascend.device import device_config
 from vllm_ascend.device.hardware import AscendDeviceType
+from vllm_ascend.device.hardware_profile import get_hardware_profile
 from vllm_ascend.ops.kimi_kda import AscendKimiK3DeltaAttention
 from vllm_ascend.quantization.methods.w8a8.w8a8_dynamic import AscendW8A8DynamicLinearMethod
 from vllm_ascend.quantization.prepared_linear_input import PreparedLinearInput
-
-
-@pytest.mark.parametrize("device", list(AscendDeviceType))
-def test_device_gate(device):
-    with patch.object(device_config, "get_device_config", return_value=SimpleNamespace(_device_type=device)):
-        assert device_config.supports_kda_int8_quant_overlap() == (device is AscendDeviceType.A3)
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -28,7 +22,10 @@ def test_quantize_once_and_reuse_scales(dtype, wrapped):
     x = torch.randn(4, 16, dtype=dtype)
     q, scale, result = torch.zeros_like(x, dtype=torch.int8), torch.ones(4), object()
     with (
-        patch("vllm_ascend.ops.kimi_kda.supports_kda_int8_quant_overlap", return_value=True),
+        patch(
+            "vllm_ascend.ops.kimi_kda.get_current_hardware_profile",
+            return_value=get_hardware_profile(AscendDeviceType.A3),
+        ),
         patch("torch_npu.npu_dynamic_quant", return_value=(q, scale)) as quant,
         patch("torch_npu.npu_quant_matmul", return_value=result) as matmul,
     ):
@@ -56,7 +53,10 @@ def test_unsupported_inputs_keep_original_path(enabled, dtype, shape):
     attention = SimpleNamespace(in_proj_qkvgfab=SimpleNamespace(quant_method=scheme))
     x = torch.randn(shape, dtype=dtype)
     with (
-        patch("vllm_ascend.ops.kimi_kda.supports_kda_int8_quant_overlap", return_value=enabled),
+        patch(
+            "vllm_ascend.ops.kimi_kda.get_current_hardware_profile",
+            return_value=get_hardware_profile(AscendDeviceType.A3 if enabled else AscendDeviceType.A5),
+        ),
         patch("torch_npu.npu_dynamic_quant") as quant,
     ):
         assert AscendKimiK3DeltaAttention._quantize_fused_qkv(attention, x) is x
@@ -68,7 +68,10 @@ def test_prepare_decline_falls_back():
     attention = SimpleNamespace(in_proj_qkvgfab=SimpleNamespace(quant_method=scheme))
     x = torch.randn(4, 16, dtype=torch.bfloat16)
     with (
-        patch("vllm_ascend.ops.kimi_kda.supports_kda_int8_quant_overlap", return_value=True),
+        patch(
+            "vllm_ascend.ops.kimi_kda.get_current_hardware_profile",
+            return_value=get_hardware_profile(AscendDeviceType.A3),
+        ),
         patch.object(scheme, "prepare_input_for_overlap", return_value=None),
     ):
         assert AscendKimiK3DeltaAttention._quantize_fused_qkv(attention, x) is x

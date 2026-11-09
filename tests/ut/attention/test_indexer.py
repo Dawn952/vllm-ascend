@@ -187,7 +187,10 @@ def test_sharded_indexer_pcp_request_capacity(mock_cos_sin, native, rows):
         patch(
             "vllm_ascend.attention.indexer.get_dcp_group", return_value=SimpleNamespace(world_size=2, rank_in_group=1)
         ),
-        patch("vllm_ascend.attention.indexer.uses_native_int8_sparse_adaptor", return_value=False),
+        patch(
+            "vllm_ascend.attention.indexer.get_current_hardware_profile",
+            return_value=SimpleNamespace(supports=lambda capability: False),
+        ),
     ):
         if rows > 9:
             with pytest.raises(ValueError, match="request.*capacity"):

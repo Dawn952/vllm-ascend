@@ -11,13 +11,12 @@ import torch
 import torch_npu
 
 from vllm_ascend.attention.indexer import AscendSFAIndexerBackend
-from vllm_ascend.device.device_config import uses_native_int8_sparse_adaptor
-from vllm_ascend.device.hardware_profile import get_current_hardware_profile
+from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
 from vllm_ascend.ops.triton import indexer_quant_cache_int8 as kernels
 from vllm_ascend.ops.triton.indexer_quant_cache_int8 import indexer_quant_cache_int8
 
 pytestmark = pytest.mark.skipif(
-    not uses_native_int8_sparse_adaptor(get_current_hardware_profile()), reason="A3 native INT8 indexer"
+    not get_current_hardware_profile().supports(HardwareCapability.NATIVE_INT8_SPARSE), reason="A3 native INT8 indexer"
 )
 
 
@@ -197,7 +196,7 @@ def test_invalid_and_empty_slots_do_not_write():
 @torch.inference_mode()
 def benchmark(tokens, trials):
     """Measure separate graphs to exclude Python launch gaps and JIT warmup."""
-    assert uses_native_int8_sparse_adaptor(get_current_hardware_profile())
+    assert get_current_hardware_profile().supports(HardwareCapability.NATIVE_INT8_SPARSE)
     x, slots, host_slots = make_inputs(tokens, slot_dtype=torch.int32)
     baseline, candidate = make_cache(), make_cache()
 

@@ -41,7 +41,6 @@ from vllm_ascend.attention.context_parallel.sfa_dcp_utils import (
 )
 from vllm_ascend.attention.context_parallel.sharded_indexer import use_local_topk_output
 from vllm_ascend.attention.utils import split_decodes_and_prefills, uses_pcp_sharded_layout
-from vllm_ascend.device.device_config import uses_native_int8_sparse_adaptor
 from vllm_ascend.device.device_op import DeviceOperator
 from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
 from vllm_ascend.ops.rotary_embedding import get_cos_and_sin_mla
@@ -329,7 +328,7 @@ class AscendSFAIndexerBackend(nn.Module, AttentionBackend):
                 self._fused_k_cache = getattr(ops, "indexer_quant_cache", None)
             elif (
                 HAS_TRITON
-                and uses_native_int8_sparse_adaptor(get_current_hardware_profile())
+                and get_current_hardware_profile().supports(HardwareCapability.NATIVE_INT8_SPARSE)
                 and self.c8_k_cache_dtype == torch.int8
                 and self.c8_k_scale_cache_dtype == torch.float16
             ):
@@ -577,7 +576,7 @@ class AscendSFAIndexerBackend(nn.Module, AttentionBackend):
             cu_seqlens_q = query_start_loc.to(torch.int32)
             seqused_k = seq_lens.to(torch.int32)
             dcp_kwargs = indexer_metadata.qli_dcp_args or {}
-            if uses_native_int8_sparse_adaptor(get_current_hardware_profile()):
+            if get_current_hardware_profile().supports(HardwareCapability.NATIVE_INT8_SPARSE):
                 group = get_dcp_group()
                 dcp_kwargs = dict(
                     causal_seqlens_kv_global=indexer_metadata.seq_lens,
@@ -814,7 +813,7 @@ class AscendSFAIndexerBackend(nn.Module, AttentionBackend):
                     topk=self.topk_tokens,
                     **indexer_metadata.qli_dcp_args,
                 )
-            elif uses_native_int8_sparse_adaptor(get_current_hardware_profile()):
+            elif get_current_hardware_profile().supports(HardwareCapability.NATIVE_INT8_SPARSE):
                 indices, scores = DeviceOperator.indexer_select_dcp_candidates(
                     q_li.view(*q_li_shape_ori),
                     weights,
@@ -1198,7 +1197,7 @@ class AscendSFAIndexerMetadataBuilder(AttentionMetadataBuilder[AscendSFAIndexerM
             metadata.query_start_loc = query_start_loc.to(torch.int32)
             metadata.actual_seq_lengths_key = actual_seq_lengths_key.to(torch.int32)
             dcp_kwargs = metadata.qli_dcp_args or {}
-            if uses_native_int8_sparse_adaptor(get_current_hardware_profile()):
+            if get_current_hardware_profile().supports(HardwareCapability.NATIVE_INT8_SPARSE):
                 group = get_dcp_group()
                 dcp_kwargs = dict(
                     causal_seqlens_kv_global=metadata.seq_lens,
@@ -1375,7 +1374,7 @@ class AscendSFAIndexerMetadataBuilder(AttentionMetadataBuilder[AscendSFAIndexerM
                     cp_rank=group.rank_in_group,
                     cp_interleave=interleave,
                 )
-            elif uses_native_int8_sparse_adaptor(get_current_hardware_profile()):
+            elif get_current_hardware_profile().supports(HardwareCapability.NATIVE_INT8_SPARSE):
                 build_local_key_lengths(
                     seq_lens, actual_seq_lengths_key, group.world_size, group.rank_in_group, interleave
                 )

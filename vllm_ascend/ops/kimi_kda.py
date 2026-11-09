@@ -31,7 +31,7 @@ from vllm_ascend.attention.utils import (
     maybe_save_kv_layer_to_connector,
     wait_for_kv_layer_from_connector,
 )
-from vllm_ascend.device.device_config import supports_kda_int8_quant_overlap
+from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
 from vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.attention_fence import (
     record_attention_compute_start,
 )
@@ -456,7 +456,7 @@ class AscendKimiK3DeltaAttention(KimiK3DeltaAttention):
             type(inner_quant_method) is AscendW8A8DynamicLinearMethod
             and hidden_states.dtype in (torch.float16, torch.bfloat16)
             and hidden_states.ndim == 2
-            and supports_kda_int8_quant_overlap()
+            and get_current_hardware_profile().supports(HardwareCapability.KDA_INT8_QUANT_OVERLAP)
         ):
             # Prepare on main before the BFG completion wait. apply() consumes
             # the INT8 tensor and per-token scales without quantizing again.

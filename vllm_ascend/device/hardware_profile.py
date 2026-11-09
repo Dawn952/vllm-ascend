@@ -124,6 +124,10 @@ class HardwareCapability(Enum):
     INPLACE_PARTIAL_ROTARY_MUL_NEGATE_SIN = auto()
     # CANN FP8 indexer quantization plus separate page-strided K/scale writes.
     INDEXER_QUANT_CACHE = auto()
+    # Prepare per-token INT8 KDA projection inputs before the BFG stream wait.
+    KDA_INT8_QUANT_OVERLAP = auto()
+    # Native sparse indexer ABI with INT8 Q/K, FP16 scales and FP32 scores.
+    NATIVE_INT8_SPARSE = auto()
     # Reserve host CPUs for interrupt handling when constructing worker CPU pools.
     IRQ_CPU_RESERVATION = auto()
     # Create the local communication resource used by supported KV-transfer deployments.
@@ -293,6 +297,8 @@ _STANDARD_CAPABILITIES = frozenset(
     }
 )
 _A3_CAPABILITIES = _STANDARD_CAPABILITIES | {
+    HardwareCapability.KDA_INT8_QUANT_OVERLAP,
+    HardwareCapability.NATIVE_INT8_SPARSE,
     HardwareCapability.MINIMAX_M3_GBSA_METADATA_REUSE,
     HardwareCapability.RMS_NORM_DYNAMIC_QUANT,
     HardwareCapability.DEQUANT_SITU_QUANT,
