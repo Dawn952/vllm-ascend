@@ -64,6 +64,7 @@ def align_paired_sfa_cache(specs) -> None:
 def paired_sfa_cache_groups(config, specs):
     draft = {name: spec for name, spec in specs.items() if _is_dspark_draft_spec(spec)}
     if not draft:
+        # K3.1 also supports running without speculative decoding.
         return _paired_sfa_target_cache_groups(config, specs)
     target = {name: spec for name, spec in specs.items() if not _is_dspark_draft_spec(spec)}
     groups = _paired_sfa_target_cache_groups(config, target)
@@ -161,31 +162,45 @@ def paired_sfa_pool_bytes(groups):
 
 def paired_sfa_cache_config(config, groups, available_memory):
     _, main, indexer, recurrent, main_page, indexer_page, slots = _layout(groups)
-    blocks = may_override_num_blocks(config, max(available_memory // paired_sfa_pool_bytes(groups), 0))
+    pool_bytes = paired_sfa_pool_bytes(groups)
+    blocks = may_override_num_blocks(config, max(available_memory // pool_bytes, 0))
+    backing_size = pool_bytes * blocks
+    main_layer_size = main_page * blocks
     tensors = []
-    for slot in range(slots):
-        names = main[slot : slot + 1]
-        names += [g.layer_names[slot] for g in recurrent if slot < len(g.layer_names)]
-        tensors.append(
-            KVCacheTensor(size=main_page * blocks, layers=names, offset=0, layer_stride=0, block_stride=main_page)
-        )
+    # Each descriptor places one group's layers in the common backing.
+    # Groups overlay the same slots; their live block IDs are disjoint.
+    for names in [main, *(g.layer_names for g in recurrent)]:
+        if names:
+            tensors.append(
+                KVCacheTensor(
+                    size=backing_size, layers=names, offset=0, layer_stride=main_layer_size, block_stride=main_page
+                )
+            )
+    offset = slots * main_layer_size
     for name in indexer:
         tensors.append(
             KVCacheTensor(
-                size=indexer_page * blocks, layers=[name], offset=0, layer_stride=0, block_stride=indexer_page
+                size=backing_size,
+                layers=[name],
+                offset=offset,
+                layer_stride=indexer_page * blocks,
+                block_stride=indexer_page,
             )
         )
-    # Shared block IDs never alias draft tensors with target or KDA tensors.
+        offset += indexer_page * blocks
+    # Draft layers share full-history block IDs but own disjoint byte ranges,
+    # retaining each layer's dtype and page geometry.
     for name, spec in _draft_layer_specs(groups).items():
         tensors.append(
             KVCacheTensor(
-                size=spec.page_size_bytes * blocks,
+                size=backing_size,
                 layers=[name],
-                offset=0,
-                layer_stride=0,
+                offset=offset,
+                layer_stride=spec.page_size_bytes * blocks,
                 block_stride=spec.page_size_bytes,
             )
         )
+        offset += spec.page_size_bytes * blocks
     return KVCacheConfig(
         num_blocks=blocks,
         kv_cache_tensors=tensors,

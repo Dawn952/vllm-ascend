@@ -16,6 +16,7 @@ from vllm_ascend.models.kimi_k3.paired_sfa_cache import (
     paired_sfa_pool_bytes,
 )
 from vllm_ascend.patch.platform import patch_kv_cache_utils
+from vllm_ascend.worker.v2 import attn_utils
 
 
 def make_specs():
@@ -55,9 +56,14 @@ def make_config():
         model_config=SimpleNamespace(
             hf_config=SimpleNamespace(model_type="kimi_k31"),
             hf_text_config=SimpleNamespace(model_type="kimi_linear"),
+            max_model_len=64,
         ),
+        speculative_config=None,
+        parallel_config=SimpleNamespace(decode_context_parallel_size=1, prefill_context_parallel_size=1),
         scheduler_config=SimpleNamespace(disable_hybrid_kv_cache_manager=False),
         cache_config=SimpleNamespace(num_gpu_blocks_override=None, prefix_cache_retention_interval=None),
+        additional_config={},
+        kv_transfer_config=None,
     )
 
 
@@ -71,10 +77,11 @@ def test_token_blocks_unchanged_and_components_share_ids():
     assert paired_sfa_pool_bytes(groups) == 29048832
     plan = paired_sfa_cache_config(config, groups, 17556701184)
     assert plan.num_blocks == 604
-    assert sum(t.size for t in plan.kv_cache_tensors) <= 17556701184
-    assert len(plan.kv_cache_tensors) == 48
+    assert {t.size for t in plan.kv_cache_tensors} == {604 * 29048832}
+    assert plan.kv_cache_tensors[0].size <= 17556701184
+    assert len(plan.kv_cache_tensors) == 28
     assert len(groups[0].kv_cache_spec.kv_cache_specs) == 48
-    assert all(t.offset == t.layer_stride == 0 for t in plan.kv_cache_tensors)
+    assert all(t.layer_stride == plan.num_blocks * t.block_stride for t in plan.kv_cache_tensors)
 
 
 @pytest.mark.parametrize("interval", [None, 5])
@@ -148,9 +155,180 @@ def test_a3_int8_fp16_pages_preserve_tp16_recurrent_ownership():
     assert paired_sfa_pool_bytes(groups) == 14487552
     plan = paired_sfa_cache_config(config, groups, 115900539)
     assert plan.num_blocks == 8
-    assert sum(tensor.size for tensor in plan.kv_cache_tensors) == 115900416
+    assert {tensor.size for tensor in plan.kv_cache_tensors} == {115900416}
     assert all(
         spec.sfa_dcp_replicated_indexer_size == 1
         for spec in specs.values()
         if isinstance(spec, AscendSFAIndexerCacheSpec)
     )
+
+
+def make_small_specs(with_draft):
+    specs = {}
+    for layer in range(6):
+        name = f"model.layers.{layer}"
+        if layer in (2, 5):
+            specs[name + ".attn"] = AscendMLAAttentionSpec(
+                block_size=16, num_kv_heads=1, head_size=64, dtype=torch.int8, cache_sparse_sfa_c8=True
+            )
+            specs[name + ".indexer.k_cache"] = AscendSFAIndexerCacheSpec(
+                block_size=16,
+                num_kv_heads=1,
+                head_size=12,
+                dtype=torch.int8,
+                scale_dim=1,
+                scale_dtype=torch.float32,
+            )
+        else:
+            specs[name + ".linear_attn"] = MambaSpec(
+                block_size=16,
+                shapes=((2, 4), (4, 4)),
+                dtypes=(torch.bfloat16, torch.float32),
+                mamba_cache_mode="align",
+            )
+    if with_draft:
+        for layer, head_size in enumerate((16, 24)):
+            specs[f"draft.layers.{layer}.attn"] = AscendMLAAttentionSpec(
+                block_size=16,
+                num_kv_heads=1,
+                head_size=head_size,
+                dtype=torch.bfloat16,
+                is_dspark_draft=True,
+                non_causal_multi_token_decode=True,
+            )
+    return specs
+
+
+@pytest.mark.parametrize("with_draft", [False, True])
+@pytest.mark.parametrize("kv_transfer", [False, True])
+def test_paired_backing_preserves_layer_and_block_ownership(monkeypatch, with_draft, kv_transfer):
+    config, specs = make_config(), make_small_specs(with_draft)
+    config.kv_transfer_config = SimpleNamespace(kv_connector="MooncakeConnectorV2") if kv_transfer else None
+    groups = paired_sfa_cache_groups(config, specs)
+    budget = 15360 if with_draft else 10240
+    plan = paired_sfa_cache_config(config, groups, budget)
+    assert plan.num_blocks == 4
+    assert {tensor.size for tensor in plan.kv_cache_tensors} == {budget}
+    monkeypatch.setattr(attn_utils, "get_current_vllm_config", lambda: config)
+    monkeypatch.setattr(attn_utils, "enable_sfa", lambda _: True)
+    raw = attn_utils._allocate_kv_cache(plan, shared_layers={}, device=torch.device("cpu"))
+
+    # One allocation, even though many placement descriptors refer to it.
+    assert set(raw) == set(specs)
+    assert len({tensor.untyped_storage().data_ptr() for tensor in raw.values()}) == 1
+    alignment = 2 * 1024 * 1024 if kv_transfer else 0
+    assert {tensor.untyped_storage().nbytes() for tensor in raw.values()} == {budget + alignment}
+    base = raw["model.layers.2.attn"].data_ptr()
+    if kv_transfer:
+        assert base % alignment == 0
+    expected_offsets = {
+        "model.layers.2.attn": 0,
+        "model.layers.5.attn": 4096,
+        "model.layers.0.linear_attn": 0,
+        "model.layers.3.linear_attn": 4096,
+        "model.layers.1.linear_attn": 0,
+        "model.layers.4.linear_attn": 4096,
+        "model.layers.2.indexer.k_cache": 8192,
+        "model.layers.5.indexer.k_cache": 9216,
+    }
+    if with_draft:
+        expected_offsets.update({"draft.layers.0.attn": 10240, "draft.layers.1.attn": 12288})
+        assert groups[0].is_eagle_group
+        assert all(name in groups[0].layer_names for name in expected_offsets if name.startswith("draft."))
+    for name, offset in expected_offsets.items():
+        assert raw[name].data_ptr() == base + offset
+        assert raw[name].numel() == 4 * specs[name].page_size_bytes
+
+    # Each group owns a different live pool ID. Writing every layer's page
+    # must preserve all other live layers, including indexer and draft data.
+    live_pages = []
+    for group_id, group in enumerate(groups):
+        block_id = group_id + 1
+        for name in group.layer_names:
+            page = specs[name].page_size_bytes
+            view = raw[name][block_id * page : (block_id + 1) * page]
+            value = len(live_pages) + 1
+            view.fill_(value)
+            live_pages.append((view, value))
+    for view, value in live_pages:
+        assert torch.all(view == value)
+
+    # KDA state reshaping must retain the nonzero layer offset and page stride.
+    name = "model.layers.3.linear_attn"
+    states = attn_utils._reshape_mamba_kv_cache(raw[name], specs[name])
+    assert states[0].data_ptr() == base + 4096
+    assert states[1].data_ptr() == base + 4096 + 16
+    for state in states:
+        assert state.stride(0) * state.element_size() == 1024
+
+    backend = SimpleNamespace(get_kv_cache_shape=lambda blocks, block, heads, dim: (blocks, block, heads, dim))
+    indexer_groups = [
+        SimpleNamespace(kv_cache_group_id=0, kv_cache_spec=spec, layer_names=[name], backend=backend)
+        for name, spec in specs.items()
+        if isinstance(spec, AscendSFAIndexerCacheSpec)
+    ]
+    indexer_caches = attn_utils._reshape_kv_cache_v2(
+        attn_groups=indexer_groups,
+        kv_cache_raw_tensors=raw,
+        cache_dtype="auto",
+        kernel_block_sizes=[16],
+        shared_kv_cache_layers={},
+        kv_cache_config=plan,
+    )
+    for name, (key, scale) in indexer_caches.items():
+        assert key.data_ptr() == base + expected_offsets[name]
+        assert scale.data_ptr() == key.data_ptr() + 192
+        assert key.stride(0) * key.element_size() == scale.stride(0) * scale.element_size() == 256
+        assert scale.dtype == torch.float32
+        assert key.shape == (4, 16, 1, 12)
+        assert scale.shape == (4, 16, 1, 1)
+
+    if with_draft:
+        for layer, nope_dim in enumerate((8, 16)):
+            name = f"draft.layers.{layer}.attn"
+            key, rope = attn_utils._reshape_combined_mla_kv_cache(
+                raw[name], (4, 16, 1, nope_dim), (4, 16, 1, 8), torch.bfloat16, specs[name].page_size_bytes
+            )
+            assert key.data_ptr() == base + expected_offsets[name]
+            assert rope.data_ptr() == key.data_ptr() + 16 * nope_dim * 2
+            assert key.stride(0) * 2 == rope.stride(0) * 2 == specs[name].page_size_bytes
+            assert key.dtype == rope.dtype == torch.bfloat16
+
+
+@pytest.mark.parametrize("local_role", ["target", "recurrent", "draft"])
+def test_paired_backing_pipeline_local_groups(monkeypatch, local_role):
+    config, specs = make_config(), make_small_specs(with_draft=True)
+    groups = paired_sfa_cache_groups(config, specs)
+    if local_role == "target":
+        local_names = {name for name in specs if not name.startswith("draft.")}
+        budget = 10240
+    elif local_role == "recurrent":
+        local_names = {name for name, spec in specs.items() if isinstance(spec, MambaSpec)}
+        budget = 8192
+    else:
+        local_names = {name for name in specs if name.startswith("draft.")}
+        budget = 5120
+    # Upstream PP projection retains global specs while filtering local names.
+    groups = [
+        replace(group, layer_names=[name for name in group.layer_names if name in local_names]) for group in groups
+    ]
+    plan = paired_sfa_cache_config(config, groups, budget)
+    assert plan.num_blocks == 4
+    assert {tensor.size for tensor in plan.kv_cache_tensors} == {budget}
+    monkeypatch.setattr(attn_utils, "get_current_vllm_config", lambda: config)
+    monkeypatch.setattr(attn_utils, "enable_sfa", lambda _: True)
+    raw = attn_utils._allocate_kv_cache(plan, shared_layers={}, device=torch.device("cpu"))
+    assert set(raw) == local_names
+    assert len({tensor.untyped_storage().data_ptr() for tensor in raw.values()}) == 1
+    assert {tensor.untyped_storage().nbytes() for tensor in raw.values()} == {budget}
+    if local_role == "draft":
+        assert raw["draft.layers.1.attn"].data_ptr() - raw["draft.layers.0.attn"].data_ptr() == 2048
+
+
+@pytest.mark.parametrize("with_draft", [False, True])
+def test_paired_backing_keeps_zero_block_plan(with_draft):
+    config, specs = make_config(), make_small_specs(with_draft)
+    groups = paired_sfa_cache_groups(config, specs)
+    plan = paired_sfa_cache_config(config, groups, 0)
+    assert plan.num_blocks == 0
+    assert all(tensor.size == tensor.offset == tensor.layer_stride == 0 for tensor in plan.kv_cache_tensors)
