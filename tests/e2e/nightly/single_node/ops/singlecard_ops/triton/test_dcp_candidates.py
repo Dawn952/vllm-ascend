@@ -122,3 +122,20 @@ def test_sorted_pack_preserves_score_bits_and_large_integer_payloads(dtype, worl
         ids.npu(), scores.npu(), world, rank, interleave, sort_candidates=True, fuse_sort=True
     )
     assert torch.equal(actual.cpu(), expected)
+
+
+def test_bf16_candidates_pack_and_global_topk_match_reference():
+    world, rows, topk, interleave = 8, 2, 16, 768
+    packed, ids, values = [], [], []
+    for rank in range(world):
+        local = (torch.arange(topk, dtype=torch.int32) * 769).reshape(1, 1, topk).expand(rows, 1, topk).clone()
+        scores = ((torch.arange(topk, dtype=torch.float32) * 3 + rank) % 7).to(torch.bfloat16)
+        scores = scores.reshape(1, 1, topk).expand(rows, 1, topk).clone()
+        local[1, :, topk // 2 :] = -1
+        scores[1, :, topk // 2 :] = -torch.inf
+        packed.append(pack_local_candidates(local.npu(), scores.npu(), world, rank, interleave))
+        ids.append(local_to_global(local, world, rank, interleave))
+        values.append(scores.float())
+    result = merge_packed_candidates(torch.cat(packed, dim=0), rows, world, topk)
+    expected = merge_topk_candidates(torch.cat(ids, dim=-1), torch.cat(values, dim=-1), topk)
+    torch.testing.assert_close(result.cpu(), expected)
