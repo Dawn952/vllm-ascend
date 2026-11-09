@@ -1,4 +1,0 @@
-pr: 7
-entries:
-  - category: bugfix
-    text: Fixed incorrect results and vector errors in QLI workloads using LD workspace partitioning.
