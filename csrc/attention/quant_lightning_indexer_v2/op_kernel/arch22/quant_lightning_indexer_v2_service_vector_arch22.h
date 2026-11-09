@@ -1073,12 +1073,11 @@ __aicore__ inline void QLIV2Vector<QLIV2T>::ProcessVec1(const QLIV2Common::RunIn
             cuRealAcSeq = Max(0, Min(visible, static_cast<int32_t>(info.actS2Size)));
         }
         int32_t cuS2Len = cuBaseS2Idx + s2BaseSize_ >= cuRealAcSeq ? cuRealAcSeq - cuBaseS2Idx : s2BaseSize_;
-        // 当前vec1ResGm对应S1的位置
-        // P10: LD 布局 = 每核 s1Base 行预留区 (起点 = saveWorkSpaceIdx * s1Base * pairW),
-        // 行内用全局行号 cuS1Idx (0..s1Base-1) 作槽偏移 — 同一全局行在所有分段核的
-        // 槽偏移一致, 头核归并时按 (核i*4 + 全局行) 寻址
+        // Each LD workspace slot contains s1BaseSize_ rows of the current S1 block.
+        // ProcessLD reads block-relative rows, while output/mask offsets use cuS1Idx.
+        int32_t blockRowIdx = cuS1Idx - cuBaseS1Idx;
         uint64_t wsOffset = static_cast<uint64_t>(info.saveWorkSpaceIdx) * s1BaseSize_ * topkPairWidth_ +
-                            static_cast<uint64_t>(cuS1Idx) * topkPairWidth_;
+                            static_cast<uint64_t>(blockRowIdx) * topkPairWidth_;
         if (cuRealAcSeq > 0 && cuS2Len > 0) {
             int32_t cuS2LenVecAlign = AlignS2(cuS2Len);
             LocalTensor<float> mmInUb = inQueue_.AllocTensor<float>();
@@ -1310,9 +1309,8 @@ __aicore__ inline void QLIV2Vector<QLIV2T>::ProcessLD()
     AscendC::DataCopyExtParams indexValueParams;
     // P3: 每列表搬运/间距按实际 topk 对宽 (vec1ResGm 内相邻列表间距 = 3 对宽)
     indexValueParams.blockLen = topkPairWidth_ * sizeof(int32_t); // bytes
-    // P10: 分段槽按核分布 (核 i 的区起点 = i*s1Base 槽), 跨 3 列表的间距 = s1Base 槽。
-    // DataCopyExtParams.srcStride 单位 = 32B 块: (s1Base*pairW*4B)/32
-    indexValueParams.srcStride = s1BaseSize_ * topkPairWidth_ * sizeof(int32_t) / 32U;
+    // For a GM source, srcStride is the byte gap between consecutive copied blocks.
+    indexValueParams.srcStride = (s1BaseSize_ - 1U) * topkPairWidth_ * sizeof(int32_t);
     indexValueParams.dstStride = 0;
 
     uint32_t ldProWorkspaceNum = ldInfo_.workspaceNum;
