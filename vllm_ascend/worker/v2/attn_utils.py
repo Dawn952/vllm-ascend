@@ -1193,6 +1193,7 @@ def _allocate_kv_cache(
     # prefill disaggregation need the addr of cache tensor be aligned with 2M
     alignment = 2 * 1024 * 1024
     layer_kv_cache_spec = _get_layer_kv_cache_specs(kv_cache_config)
+    is_kimi_k31 = getattr(getattr(vllm_config.model_config, "hf_config", None), "model_type", None) == "kimi_k31"
     attn_layers: dict[str, AttentionLayerBase] | None = None
     # Gemma 4 full/sliding groups share one pool while retaining contiguous
     # K/V views. The worker keeps the full budget only for this V2 path.
@@ -1215,7 +1216,7 @@ def _allocate_kv_cache(
     # the compressed indexer and its state cache). This differs from the
     # generic main layout, which treats descriptor layers as independent
     # regions within one common backing.
-    if uses_padded_page_layout and has_shared_slot_descriptors:
+    if uses_padded_page_layout and has_shared_slot_descriptors and not is_kimi_k31:
         slot_layers: set[str] = set()
         for descriptor in kv_cache_config.kv_cache_tensors:
             names = get_kv_cache_tensor_layers(descriptor)
@@ -1326,7 +1327,9 @@ def _allocate_kv_cache(
     hybrid_backing: torch.Tensor | None = None
     step_backing: torch.Tensor | None = None
     is_paired_sfa = any(isinstance(spec, AscendSFAIndexerCacheSpec) for spec in layer_kv_cache_spec.values())
-    if use_hybrid_layout and not is_dsv4_model and not is_paired_sfa:
+    # K3.1 uses the same placement contract, including PP ranks that retain
+    # only draft or recurrent layers and therefore have no local hybrid pair.
+    if (use_hybrid_layout and not is_dsv4_model and not is_paired_sfa) or is_kimi_k31:
         tensor_sizes = {tensor.size for tensor in kv_cache_config.kv_cache_tensors}
         if len(tensor_sizes) != 1:
             raise ValueError("Hybrid KV cache tensors must share one backing allocation.")
