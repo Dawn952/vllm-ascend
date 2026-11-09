@@ -161,6 +161,7 @@ def test_disabled_prefix_cache_preserves_private_tail_allocation(with_private_ta
     scheduler_size, hash_size = _ascend_resolve_kv_cache_block_sizes(
         cfg,
         SimpleNamespace(
+            model_config=SimpleNamespace(hf_config=SimpleNamespace(model_type="glm_moe_dsa")),
             cache_config=SimpleNamespace(enable_prefix_caching=False, block_size=full.block_size),
             parallel_config=SimpleNamespace(decode_context_parallel_size=1),
         ),
@@ -453,6 +454,7 @@ def _make_vllm_config(
     prefix_match_unit: int | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
+        model_config=SimpleNamespace(hf_config=SimpleNamespace(model_type="kimi_k3")),
         cache_config=SimpleNamespace(
             block_size=block_size,
             enable_prefix_caching=enable_prefix_caching,
@@ -904,7 +906,7 @@ def test_deepseek_v4_main_restores_ascend_shared_tuple_planner(monkeypatch) -> N
     planned_tensor = _make_kv_cache_tensor(4096, ["c4_attn", "c128_attn"])
     vllm_config = SimpleNamespace(
         cache_config=SimpleNamespace(prefix_cache_retention_interval=None),
-        model_config=SimpleNamespace(max_model_len=4096),
+        model_config=SimpleNamespace(max_model_len=4096, hf_config=SimpleNamespace(model_type="deepseek_v4")),
         parallel_config=SimpleNamespace(decode_context_parallel_size=1),
         max_in_flight_tokens=1,
     )
@@ -1016,13 +1018,14 @@ def test_deepseek_v4_main_rank_replan_preserves_num_blocks() -> None:
         )
     ]
     vllm_config = SimpleNamespace(
+        model_config=SimpleNamespace(hf_config=SimpleNamespace(model_type="deepseek_v4")),
         cache_config=SimpleNamespace(
             num_gpu_blocks_override=None,
             prefix_cache_retention_interval=None,
             # Both supported lanes (#57169) resolve the KV cache layout when
             # computing the pool bytes per block.
             get_resolved_kv_cache_layout=lambda: KVCacheLayout.LBHNC,
-        )
+        ),
     )
     ascend_bytes_per_block = kv_cache_utils_patch._ascend_pool_bytes_per_block(vllm_config, kv_cache_groups)
     upstream_bytes_per_block = kv_cache_utils_patch._orig_pool_bytes_per_block(vllm_config, kv_cache_groups)

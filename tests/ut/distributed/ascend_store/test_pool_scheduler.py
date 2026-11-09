@@ -172,7 +172,11 @@ def test_joint_prefix_group_ownership_survives_scheduler_conversion_and_empty_pp
     draft = replace(target, non_causal_multi_token_decode=True)
     layer_specs = {"draft": draft, "target": target} if draft_first else {"target": target, "draft": draft}
     mixed = UniformTypeKVCacheSpecs(block_size=16, kv_cache_specs=layer_specs)
-    config = SimpleNamespace(speculative_config=SimpleNamespace(method="dspark"), kv_transfer_config=None)
+    config = SimpleNamespace(
+        model_config=SimpleNamespace(hf_config=SimpleNamespace(model_type="kimi_k3")),
+        speculative_config=SimpleNamespace(method="dspark"),
+        kv_transfer_config=None,
+    )
     kv_config = SimpleNamespace(
         num_blocks=4,
         hisparse_host_num_blocks=0,

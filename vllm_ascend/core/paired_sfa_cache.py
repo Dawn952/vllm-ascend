@@ -29,32 +29,6 @@ else:
     from vllm.v1.core.kv_cache_planning import create_kv_cache_group_specs, may_override_num_blocks
 
 
-def is_paired_sfa_cache(specs) -> bool:
-    """Recognize uncompressed SFA/recurrent hybrids, including PP projection.
-
-    Pure DSA models and GLM's compressed indexer/tail retain their planners.
-    Retained group specs allow recognition on a PP worker with no local MLA.
-    """
-    values = (
-        list(specs.values())
-        if isinstance(specs, dict)
-        else [
-            inner
-            for group in specs
-            for inner in (
-                group.kv_cache_spec.kv_cache_specs.values()
-                if isinstance(group.kv_cache_spec, UniformTypeKVCacheSpecs)
-                else (group.kv_cache_spec,)
-            )
-        ]
-    )
-    return (
-        any(isinstance(spec, AscendSFAIndexerCacheSpec) for spec in values)
-        and any(isinstance(spec, AscendMLAAttentionSpec) for spec in values)
-        and any(isinstance(spec, MambaSpec) for spec in values)
-    )
-
-
 def _is_dspark_draft_spec(spec) -> bool:
     return isinstance(spec, AscendMLAAttentionSpec) and spec.is_dspark_draft
 

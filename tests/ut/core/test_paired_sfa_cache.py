@@ -3,6 +3,7 @@
 
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -10,11 +11,11 @@ from vllm.v1.kv_cache_interface import KVCacheGroupSpec, MambaSpec
 
 from vllm_ascend.core.kv_cache_interface import AscendMLAAttentionSpec, AscendSFAIndexerCacheSpec
 from vllm_ascend.core.paired_sfa_cache import (
-    is_paired_sfa_cache,
     paired_sfa_cache_config,
     paired_sfa_cache_groups,
     paired_sfa_pool_bytes,
 )
+from vllm_ascend.patch.platform import patch_kv_cache_utils
 
 
 def make_specs():
@@ -51,6 +52,10 @@ def make_specs():
 
 def make_config():
     return SimpleNamespace(
+        model_config=SimpleNamespace(
+            hf_config=SimpleNamespace(model_type="kimi_k31"),
+            hf_text_config=SimpleNamespace(model_type="kimi_linear"),
+        ),
         scheduler_config=SimpleNamespace(disable_hybrid_kv_cache_manager=False),
         cache_config=SimpleNamespace(num_gpu_blocks_override=None, prefix_cache_retention_interval=None),
     )
@@ -97,9 +102,24 @@ def test_mismatched_component_blocks_rejected():
         paired_sfa_cache_groups(make_config(), specs)
 
 
-def test_unrelated_pure_dsa_layout_keeps_existing_planner():
-    specs = {n: s for n, s in make_specs().items() if not isinstance(s, MambaSpec)}
-    assert not is_paired_sfa_cache(specs)
+@pytest.mark.parametrize("model_type", ["kimi_k31", "kimi_k3", "deepseek_v32", "glm_moe_dsa"])
+def test_paired_planner_selection_uses_outer_model_type(monkeypatch, model_type):
+    config, specs = make_config(), make_specs()
+    config.model_config.hf_config.model_type = model_type
+    paired = Mock(return_value=[])
+    upstream = Mock(return_value=[])
+    monkeypatch.setattr(patch_kv_cache_utils, "paired_sfa_cache_groups", paired)
+    monkeypatch.setattr(patch_kv_cache_utils, "_orig_get_kv_cache_groups", upstream)
+    monkeypatch.setattr(patch_kv_cache_utils, "get_qwen4_exp_kv_cache_groups", lambda *_: None)
+
+    actual = patch_kv_cache_utils._get_ascend_kv_cache_groups(config, specs)
+
+    # The same hybrid cache geometry must not opt unrelated models into K3.1.
+    # K3.1's nested text config still reports kimi_linear.
+    selected, other = (paired, upstream) if model_type == "kimi_k31" else (upstream, paired)
+    assert actual is selected.return_value
+    selected.assert_called_once_with(config, specs)
+    other.assert_not_called()
 
 
 def test_alignment_is_idempotent_and_discards_obsolete_state_padding():

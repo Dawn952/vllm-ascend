@@ -26,7 +26,6 @@ from vllm.v1.kv_cache_interface import (
 
 from vllm_ascend.core.kv_cache_interface import is_prefix_cacheable
 from vllm_ascend.core.paired_sfa_cache import (
-    is_paired_sfa_cache,
     paired_sfa_cache_config,
     paired_sfa_cache_groups,
     paired_sfa_max_memory,
@@ -125,7 +124,7 @@ def _ascend_resolve_kv_cache_block_sizes(
     cache_config = vllm_config.cache_config
     dcp = vllm_config.parallel_config.decode_context_parallel_size
     groups = kv_cache_config.kv_cache_groups
-    if is_paired_sfa_cache(groups):
+    if vllm_config.model_config.hf_config.model_type == "kimi_k31":
         # DCP scales token-history attention only; recurrent checkpoints keep
         # the TP-local state for the complete logical sequence.
         specs = [
@@ -676,7 +675,7 @@ def _ascend_pool_bytes_per_block(  # type: ignore[misc]
     layout, so using the upstream value changes ``num_blocks`` during the
     re-plan and leaves ranks inconsistent.
     """
-    if is_paired_sfa_cache(kv_cache_groups):
+    if vllm_config.model_config.hf_config.model_type == "kimi_k31":
         return paired_sfa_pool_bytes(kv_cache_groups)
     if tq_cache.uses_turboquant_groups(kv_cache_groups):
         return tq_cache.pool_bytes_per_block(kv_cache_groups)
@@ -699,8 +698,7 @@ def _has_ascend_multi_allocation_kv_cache_layout(
 ) -> bool:
     """Whether Ascend materializes these groups as several device allocations."""
     return (
-        is_paired_sfa_cache(kv_cache_groups)
-        or tq_cache.uses_turboquant_groups(kv_cache_groups)
+        tq_cache.uses_turboquant_groups(kv_cache_groups)
         or is_deepseek_v41_cache(kv_cache_groups)
         or _get_glm5_next_cache_layout(kv_cache_groups) is not None
         or _is_deepseek_v4_groups(kv_cache_groups)
@@ -719,7 +717,9 @@ def _ascend_builder_pool_bytes_per_block(
     use several backing tensors with different sizes, so their aggregate pool
     size must be supplied directly through the builder hook.
     """
-    if _has_ascend_multi_allocation_kv_cache_layout(kv_cache_groups):
+    if vllm_config.model_config.hf_config.model_type == "kimi_k31" or _has_ascend_multi_allocation_kv_cache_layout(
+        kv_cache_groups
+    ):
         return _ascend_pool_bytes_per_block(vllm_config, kv_cache_groups)
 
     # Keep upstream's one-block placement probe for layouts that use the
@@ -738,7 +738,7 @@ if vllm_version_is("0.32.0"):
         kv_cache_groups: list[KVCacheGroupSpec],
     ) -> int:
         """Keep the pre-#51718 DSV4 admission formula for its shared tuples."""
-        if is_paired_sfa_cache(kv_cache_groups):
+        if vllm_config.model_config.hf_config.model_type == "kimi_k31":
             return paired_sfa_max_memory(vllm_config, kv_cache_groups)
         if tq_cache.uses_turboquant_groups(kv_cache_groups):
             return tq_cache.max_memory_usage(vllm_config, kv_cache_groups)
@@ -782,7 +782,7 @@ else:
         else:
             builder = None
             vllm_config, kv_cache_groups = args
-        if is_paired_sfa_cache(kv_cache_groups):
+        if vllm_config.model_config.hf_config.model_type == "kimi_k31":
             return paired_sfa_max_memory(vllm_config, kv_cache_groups)
         if tq_cache.uses_turboquant_groups(kv_cache_groups):
             return tq_cache.max_memory_usage(vllm_config, kv_cache_groups)
@@ -816,7 +816,7 @@ def _get_ascend_kv_cache_groups(
     vllm_config: VllmConfig,
     kv_cache_spec: dict[str, KVCacheSpec],
 ) -> list[KVCacheGroupSpec]:
-    if is_paired_sfa_cache(kv_cache_spec):
+    if vllm_config.model_config.hf_config.model_type == "kimi_k31":
         return paired_sfa_cache_groups(vllm_config, kv_cache_spec)
     if any(is_glm5_next_cache_spec(spec) for spec in kv_cache_spec.values()):
         return get_glm5_next_kv_cache_groups(vllm_config, kv_cache_spec)
@@ -846,7 +846,7 @@ def _ascend_get_kv_cache_config_from_groups(
         if vllm_version_is("0.28.0")
         else get_qwen4_exp_kv_cache_config(vllm_config, kv_cache_groups, available_memory)
     )
-    if is_paired_sfa_cache(kv_cache_groups):
+    if vllm_config.model_config.hf_config.model_type == "kimi_k31":
         kv_cache_config = paired_sfa_cache_config(vllm_config, kv_cache_groups, available_memory)
     elif qwen_config is not None:
         kv_cache_config = qwen_config

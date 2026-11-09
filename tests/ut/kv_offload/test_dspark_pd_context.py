@@ -93,7 +93,11 @@ def test_scheduler_conversion_retains_resident_draft_in_shared_block_group():
         kv_cache_tensors=[],
         kv_cache_groups=[KVCacheGroupSpec(layer_names=["target", "draft"], kv_cache_spec=uniform)],
     )
-    vllm_config = SimpleNamespace(speculative_config=SimpleNamespace(method="dspark"), kv_transfer_config=None)
+    vllm_config = SimpleNamespace(
+        model_config=SimpleNamespace(hf_config=SimpleNamespace(model_type="kimi_k3")),
+        speculative_config=SimpleNamespace(method="dspark"),
+        kv_transfer_config=None,
+    )
     with (
         pytest.MonkeyPatch.context() as monkeypatch,
     ):
