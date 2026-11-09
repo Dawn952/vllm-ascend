@@ -1081,6 +1081,9 @@ class AscendMLAImpl(MLAAttentionImpl):
 
     def _can_use_flashmla(self) -> bool:
         config = self.vllm_config
+        # Remove this restriction once the K3.1 draft model supports FlashMLA.
+        if config.model_config.hf_config.model_type == "kimi_k31":
+            return False
         if not getattr(config, "use_v2_model_runner", False):
             return False
         if config.speculative_config is not None and config.speculative_config.method != "dspark":

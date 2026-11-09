@@ -79,7 +79,9 @@ def _make_impl() -> AscendMLAImpl:
 def _construct_impl(pcp_size: int, dcp_size: int) -> AscendMLAImpl:
     """Construct the production MLA implementation without weight processing."""
     config = SimpleNamespace(
-        model_config=SimpleNamespace(runner_type="generate", dtype=torch.float16),
+        model_config=SimpleNamespace(
+            runner_type="generate", dtype=torch.float16, hf_config=SimpleNamespace(model_type="deepseek_v3")
+        ),
         parallel_config=SimpleNamespace(
             prefill_context_parallel_size=pcp_size,
             decode_context_parallel_size=dcp_size,
