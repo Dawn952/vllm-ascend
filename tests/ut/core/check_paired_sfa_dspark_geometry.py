@@ -29,7 +29,7 @@ def main():
     from vllm.model_executor.models.deepseek_v2 import DeepseekV32IndexerCache
     from vllm.v1.kv_cache_interface import MambaSpec, MLAAttentionSpec
 
-    from vllm_ascend.core import paired_sfa_cache
+    from vllm_ascend.models.kimi_k3 import paired_sfa_cache
     from vllm_ascend.worker.v2 import attn_utils
 
     config = SimpleNamespace(

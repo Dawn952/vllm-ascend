@@ -9,7 +9,7 @@ from torch import nn
 from vllm.model_executor.layers.linear import ColumnParallelLinear, MergedColumnParallelLinear
 from vllm.model_executor.models.utils import PPMissingLayer
 
-from vllm_ascend.models.kimi_k3 import AscendKimiLinearModel
+from vllm_ascend.models.kimi_k3.kimi_k3 import AscendKimiLinearModel
 
 
 def make_linear(cls, output_sizes, tp_size=1, tp_rank=0):

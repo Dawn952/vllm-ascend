@@ -89,7 +89,7 @@ def runtime(monkeypatch):
 
         kernels[name] = Mock(side_effect=fused)
         monkeypatch.setattr(torch.ops._C_ascend, name, kernels[name], raising=False)
-    load_nodes("vllm_ascend/models/kimi_k3.py", ["AscendKimiMLP"], scope)
+    load_nodes("vllm_ascend/models/kimi_k3/kimi_k3.py", ["AscendKimiMLP"], scope)
     return SimpleNamespace(scope=scope, config=config, npu=npu, kernels=kernels)
 
 

@@ -402,7 +402,7 @@ def get_kv_cache_spec(
 
     if mamba_specs:
         if any(isinstance(spec, AscendSFAIndexerCacheSpec) for spec in kv_cache_spec.values()):
-            from vllm_ascend.core.paired_sfa_cache import align_paired_sfa_cache
+            from vllm_ascend.models.kimi_k3.paired_sfa_cache import align_paired_sfa_cache
 
             kv_cache_spec.update(mamba_specs)
             target_specs = {

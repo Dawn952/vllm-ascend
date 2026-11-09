@@ -37,7 +37,7 @@ from vllm.models.kimi_k3.nvidia.dspark_mla import (
     K3DSparkModel as UpstreamK3DSparkModel,
 )
 
-from vllm_ascend.models.kimi_k3 import (
+from vllm_ascend.models.kimi_k3.kimi_k3 import (
     AscendKimiMLAAttention,
 )
 from vllm_ascend.models.qwen3_dspark import align_draft_weights

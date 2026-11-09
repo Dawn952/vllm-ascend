@@ -10,7 +10,7 @@ import torch
 from vllm.v1.kv_cache_interface import KVCacheGroupSpec, MambaSpec
 
 from vllm_ascend.core.kv_cache_interface import AscendMLAAttentionSpec, AscendSFAIndexerCacheSpec
-from vllm_ascend.core.paired_sfa_cache import (
+from vllm_ascend.models.kimi_k3.paired_sfa_cache import (
     paired_sfa_cache_config,
     paired_sfa_cache_groups,
     paired_sfa_pool_bytes,

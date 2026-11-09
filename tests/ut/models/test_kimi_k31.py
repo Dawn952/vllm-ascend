@@ -15,7 +15,7 @@ from vllm.transformers_utils.configs.kimi_linear import KimiLinearConfig
 from vllm_ascend.attention.indexer import AscendSFAIndexerBackend
 from vllm_ascend.attention.sfa_v1 import AscendSFAImpl, PreprocessType
 from vllm_ascend.models import register_model
-from vllm_ascend.models.kimi_k3 import AscendKimiMLAAttention
+from vllm_ascend.models.kimi_k3.kimi_k3 import AscendKimiMLAAttention
 from vllm_ascend.ops import rotary_embedding
 from vllm_ascend.patch.platform.patch_kimi_k31_config import KimiK31Config, KimiK31TextConfig
 from vllm_ascend.quantization.methods import AscendW8A8MXFP8DynamicLinearMethod

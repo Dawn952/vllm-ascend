@@ -27,7 +27,7 @@ from vllm.models.kimi_k3.amd.mtp import (
 )
 from vllm.models.kimi_k3.amd.mtp import SharedHead
 
-from vllm_ascend.models.kimi_k3 import (
+from vllm_ascend.models.kimi_k3.kimi_k3 import (
     AscendKimiDecoderLayer,
     AscendKimiMoE,
     KimiMixtureOfExperts,

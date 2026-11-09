@@ -14,11 +14,11 @@ import vllm_ascend.attention.mla_v1 as mla_v1
 from vllm_ascend.attention.mla_v1 import AscendMLAImpl
 from vllm_ascend.attention.utils import mark_fused_preprocess_weights
 from vllm_ascend.models import kimi_k3, kimi_k3_dspark
-from vllm_ascend.models.kimi_k3 import (
+from vllm_ascend.models.kimi_k3.kimi_k3 import (
     AscendKimiK3MultiModalProjector,
     AscendKimiLinearModel,
 )
-from vllm_ascend.models.kimi_k3_dspark import (
+from vllm_ascend.models.kimi_k3.kimi_k3_dspark import (
     AscendK3DSparkForCausalLM,
     AscendK3DSparkModel,
 )
@@ -63,11 +63,11 @@ def test_kimi_qkv_matmul_uses_model_dispatch(runtime_mode, capturing, nz_layout)
 
     with (
         patch(
-            "vllm_ascend.models.kimi_k3.get_forward_context",
+            "vllm_ascend.models.kimi_k3.kimi_k3.get_forward_context",
             return_value=SimpleNamespace(cudagraph_runtime_mode=runtime_mode),
         ),
-        patch("vllm_ascend.models.kimi_k3.is_forward_context_available", return_value=True),
-        patch("vllm_ascend.models.kimi_k3.torch.npu.is_current_stream_capturing", return_value=capturing),
+        patch("vllm_ascend.models.kimi_k3.kimi_k3.is_forward_context_available", return_value=True),
+        patch("vllm_ascend.models.kimi_k3.kimi_k3.torch.npu.is_current_stream_capturing", return_value=capturing),
         patch(
             "vllm_ascend.quantization.methods.w8a8.w8a8_mxfp8.torch_npu.npu_grouped_matmul", return_value=[output]
         ) as grouped,
@@ -113,11 +113,11 @@ def test_kimi_routed_linear_uses_gmm_only_in_eager(runtime_mode, capturing, nz_l
 
     with (
         patch(
-            "vllm_ascend.models.kimi_k3.get_forward_context",
+            "vllm_ascend.models.kimi_k3.kimi_k3.get_forward_context",
             return_value=SimpleNamespace(cudagraph_runtime_mode=runtime_mode),
         ),
-        patch("vllm_ascend.models.kimi_k3.is_forward_context_available", return_value=True),
-        patch("vllm_ascend.models.kimi_k3.torch.npu.is_current_stream_capturing", return_value=capturing),
+        patch("vllm_ascend.models.kimi_k3.kimi_k3.is_forward_context_available", return_value=True),
+        patch("vllm_ascend.models.kimi_k3.kimi_k3.torch.npu.is_current_stream_capturing", return_value=capturing),
         patch.object(AscendW8A8MXFP8DynamicLinearMethod, "apply_single_group_gmm", return_value=output) as grouped,
     ):
         actual = layer.forward(x)
@@ -139,7 +139,7 @@ def test_kimi_routed_nz_fallback_preserves_batched_input_shape():
         _mxfp8_gmm_nz_layout=True,
         quant_method=SimpleNamespace(quant_method=method, apply=MagicMock(return_value=output)),
     )
-    with patch("vllm_ascend.models.kimi_k3.is_forward_context_available", return_value=False):
+    with patch("vllm_ascend.models.kimi_k3.kimi_k3.is_forward_context_available", return_value=False):
         actual = kimi_k3.AscendKimiK3RoutedLinear.apply_projection(layer, torch.randn(1, 4, 128))
     assert actual is output
 
@@ -248,7 +248,7 @@ def test_k3_dspark_context_writer_splits_fused_mla_cache(monkeypatch):
     )
     model.layers = [SimpleNamespace(self_attn=attn)]
     monkeypatch.setattr(
-        "vllm_ascend.models.kimi_k3_dspark.get_cos_and_sin_mla",
+        "vllm_ascend.models.kimi_k3.kimi_k3_dspark.get_cos_and_sin_mla",
         lambda positions: (torch.ones(3, 2), torch.zeros(3, 2)),
     )
 
@@ -301,7 +301,7 @@ def test_k3_dspark_context_writer_routes_strided_caches_to_prolog_v3(monkeypatch
     model.layers = [SimpleNamespace(self_attn=attn)]
     context_states = torch.randn(4, 8)
     monkeypatch.setattr(
-        "vllm_ascend.models.kimi_k3_dspark.get_cos_and_sin_mla",
+        "vllm_ascend.models.kimi_k3.kimi_k3_dspark.get_cos_and_sin_mla",
         lambda positions: (torch.ones(4, 1, 1, 1), torch.zeros(4, 1, 1, 1)),
     )
 

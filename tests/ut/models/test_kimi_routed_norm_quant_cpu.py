@@ -77,7 +77,7 @@ def runtime(monkeypatch):
     exec((ROOT / "vllm_ascend/quantization/prepared_linear_input.py").read_text(), scope)
     load_nodes("vllm_ascend/quantization/methods/w8a8/w8a8_dynamic.py", ["AscendW8A8DynamicLinearMethod"], scope)
     load_nodes("vllm_ascend/ops/layernorm.py", ["_quant_description_has_norm_bias", "AscendRMSNorm"], scope)
-    load_nodes("vllm_ascend/models/kimi_k3.py", ["AscendKimiRoutedOutputTransform"], scope)
+    load_nodes("vllm_ascend/models/kimi_k3/kimi_k3.py", ["AscendKimiRoutedOutputTransform"], scope)
     return SimpleNamespace(
         scope=scope,
         config=config,

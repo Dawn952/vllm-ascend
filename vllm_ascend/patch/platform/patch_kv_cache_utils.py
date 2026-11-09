@@ -25,12 +25,6 @@ from vllm.v1.kv_cache_interface import (
 )
 
 from vllm_ascend.core.kv_cache_interface import is_prefix_cacheable
-from vllm_ascend.core.paired_sfa_cache import (
-    paired_sfa_cache_config,
-    paired_sfa_cache_groups,
-    paired_sfa_max_memory,
-    paired_sfa_pool_bytes,
-)
 from vllm_ascend.models.deepseek_v41.cache_config import (
     get_deepseek_v41_kv_cache_config,
     get_deepseek_v41_pool_bytes_per_block,
@@ -46,6 +40,12 @@ from vllm_ascend.models.glm5next.cache_config import (
     get_glm5_next_pool_bytes_per_block,
 )
 from vllm_ascend.models.glm5next.kv_cache import is_glm5_next_cache_spec
+from vllm_ascend.models.kimi_k3.paired_sfa_cache import (
+    paired_sfa_cache_config,
+    paired_sfa_cache_groups,
+    paired_sfa_max_memory,
+    paired_sfa_pool_bytes,
+)
 from vllm_ascend.models.qwen4_exp.cache_config import (
     get_qwen4_exp_kv_cache_config,
     get_qwen4_exp_kv_cache_groups,

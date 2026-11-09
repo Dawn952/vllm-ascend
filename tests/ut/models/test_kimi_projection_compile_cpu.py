@@ -44,7 +44,7 @@ class MXFP8Method:
 
 @pytest.fixture
 def selector():
-    tree = ast.parse((ROOT / "vllm_ascend/models/kimi_k3.py").read_text())
+    tree = ast.parse((ROOT / "vllm_ascend/models/kimi_k3/kimi_k3.py").read_text())
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "AscendKimiK3RoutedLinear")
     method = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "apply_projection")
     method.decorator_list = []
