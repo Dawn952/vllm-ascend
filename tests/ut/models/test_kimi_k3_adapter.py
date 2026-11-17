@@ -559,6 +559,7 @@ def test_kimi_dense_mlp_gathers_and_scatters_sequence_shards(monkeypatch):
     mlp = kimi_k3.AscendKimiMLP.__new__(kimi_k3.AscendKimiMLP)
     nn.Module.__init__(mlp)
     mlp.use_sequence_parallel = True
+    mlp._finegrained_mlp = None
     calls = []
 
     def fake_all_gather(hidden_states):
@@ -844,8 +845,8 @@ def test_k3_dspark_post_process_rotates_projection_and_target_boundaries(tmp_pat
         layer.quant_method = SimpleNamespace(process_weights_after_loading=lambda layer: None)
         return layer
 
-    monkeypatch.setattr("vllm_ascend.models.qwen3_dspark.VocabParallelEmbedding", vocab_layer)
-    monkeypatch.setattr("vllm_ascend.models.qwen3_dspark.ParallelLMHead", vocab_layer)
+    monkeypatch.setattr("vllm_ascend.models.quarot_utils.VocabParallelEmbedding", vocab_layer)
+    monkeypatch.setattr("vllm_ascend.models.quarot_utils.ParallelLMHead", vocab_layer)
     config = SimpleNamespace(
         model_config=SimpleNamespace(model=str(tmp_path), hf_text_config=SimpleNamespace(vocab_size=3, hidden_size=2)),
         quant_config=SimpleNamespace(
