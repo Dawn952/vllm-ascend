@@ -4,5 +4,3 @@ entries:
     text: Added independent shared-expert fine-grained TP for graph-dispatched pure-DP decode, with Kimi latent-projection overlap and a generic path for models without latent projections.
   - category: feature
     text: Added independent Kimi-K3.1 QKV and full-rank output-gate projection TP while retaining request-local attention state. Kimi projection TP requires V2 graph-dispatched PD decode; existing GLM QKV TP retains eager execution.
-  - category: bugfix
-    text: Retained fused SiTU activation and MXFP8 quantization for Kimi-K3.1 shared experts on A5 when routed and shared experts use different weight precisions.
