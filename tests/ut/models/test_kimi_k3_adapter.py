@@ -559,7 +559,6 @@ def test_kimi_dense_mlp_gathers_and_scatters_sequence_shards(monkeypatch):
     mlp = kimi_k3.AscendKimiMLP.__new__(kimi_k3.AscendKimiMLP)
     nn.Module.__init__(mlp)
     mlp.use_sequence_parallel = True
-    mlp._finegrained_mlp = None
     calls = []
 
     def fake_all_gather(hidden_states):
