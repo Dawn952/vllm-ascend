@@ -61,7 +61,10 @@ class ProjectionColumnParallelLinear(ColumnParallelLinear):
 class ProjectionMergedColumnParallelLinear(MergedColumnParallelLinear, ProjectionColumnParallelLinear):
     def __init__(self, input_size: int, output_sizes: list[int], **kwargs):
         self.output_sizes = output_sizes.copy()
+        self.shard_ids = tuple(range(len(output_sizes)))
         ProjectionColumnParallelLinear.__init__(self, input_size, sum(output_sizes), **kwargs)
+        # Match upstream stacked-shard tracking after this custom allocation.
+        self.loaded_shard_ids: dict[str, set[str | int]] = {}
 
 
 @dataclass

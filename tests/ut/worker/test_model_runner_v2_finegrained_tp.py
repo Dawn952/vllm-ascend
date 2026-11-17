@@ -59,7 +59,7 @@ def _make_runner(max_num_reqs=8, decode_query_len=2, vocab=6):
         dummy_sampler_run=lambda *args, **kwargs: False,
     )
     runner.kvpp = MagicMock()
-    runner.ascend_config = SimpleNamespace(scheduler_config=SimpleNamespace(profiling_chunk_config=None))
+    runner.ascend_config = SimpleNamespace(scheduler_config=SimpleNamespace())
     runner.model = MagicMock()
     runner.model.compute_logits.side_effect = lambda x: torch.zeros(x.shape[0], vocab)
     runner.sampler = create_autospec(Sampler, instance=True)
@@ -295,8 +295,6 @@ def _run_execute_model(runner, hidden_states, dummy_run=True, is_profile=False):
         return "upstream-output"
 
     with (
-        patch("vllm_ascend.worker.v2.model_runner._start_profiling_chunk_timing", return_value=None),
-        patch("vllm_ascend.worker.v2.model_runner._finish_profiling_chunk_timing", return_value=None),
         patch("vllm_ascend.worker.v2.model_runner.should_skip_allreduce_across_dp_group", return_value=False),
         patch.object(GPUModelRunner, "execute_model", side_effect=super_execute),
     ):
@@ -451,8 +449,6 @@ def test_dp_agreed_eager_guard_covers_active_and_idle_before_forward(monkeypatch
         return "output"
 
     with (
-        patch("vllm_ascend.worker.v2.model_runner._start_profiling_chunk_timing", return_value=None),
-        patch("vllm_ascend.worker.v2.model_runner._finish_profiling_chunk_timing", return_value=None),
         patch("vllm_ascend.worker.v2.model_runner.should_skip_allreduce_across_dp_group", return_value=False),
         patch("vllm_ascend.worker.v2.model_runner.lmhead_tp_enable", return_value=False),
         patch.object(GPUModelRunner, "execute_model", side_effect=parent_execute),
@@ -491,8 +487,6 @@ def test_real_dummy_wrapper_only_exempts_startup_warmup(monkeypatch, runtime_idl
         return self.execute_model(MagicMock(), dummy_run=True, is_profile=kwargs["is_profile"])
 
     with (
-        patch("vllm_ascend.worker.v2.model_runner._start_profiling_chunk_timing", return_value=None),
-        patch("vllm_ascend.worker.v2.model_runner._finish_profiling_chunk_timing", return_value=None),
         patch("vllm_ascend.worker.v2.model_runner.should_skip_allreduce_across_dp_group", return_value=False),
         patch("vllm_ascend.worker.v2.model_runner.lmhead_tp_enable", return_value=False),
         patch.object(GPUModelRunner, "execute_model", side_effect=parent_execute),

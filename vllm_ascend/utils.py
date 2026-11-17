@@ -404,6 +404,18 @@ def _should_trans_nz(weight: torch.Tensor) -> bool:
     return True
 
 
+def is_internal_npu_format(tensor: torch.Tensor) -> bool:
+    """Whether a tensor's storage uses a device-internal layout rather than ND.
+
+    FRACTAL_NZ is not a single format: a weight cast with
+    ``customize_dtype``/``input_dtype`` reports a C0 variant such as
+    FRACTAL_NZ_C0_16, so checking against FRACTAL_NZ alone misses it.
+    """
+    if tensor.device.type != "npu":
+        return False
+    return int(torch_npu.get_npu_format(tensor)) not in (0, ACL_FORMAT_FRACTAL_ND)
+
+
 # NZ conversion policy:
 # - 310P: always convert supported weights to FRACTAL_NZ
 # - non-310P: follow additional_config.weight_nz_mode
@@ -1051,7 +1063,25 @@ def enable_sp(vllm_config=None) -> bool:
     if vllm_config is None:
         return False
 
-    return bool(vllm_config.parallel_config.use_sequence_parallel_moe)
+    if bool(vllm_config.parallel_config.use_sequence_parallel_moe):
+        return True
+
+    # Dense-family sequence parallelism: the predicate is owned by the
+    # Qwen3.5 patch (vllm_ascend.patch.worker.patch_qwen3_5). The lazy import
+    # keeps this module free of the patch module's import-time monkey
+    # patches. Mirror the STANDARD_WORKER_PATCHES gate from
+    # patch/worker/__init__.py: patch_qwen3_5 imports vllm_ascend.ops.gdn
+    # (fla_npu) at module level, which 310P runners do not install, so
+    # devices excluded from the standard worker patch bundle must not
+    # import it from here either.
+    from vllm_ascend.device.hardware_profile import HardwareCapability, get_current_hardware_profile
+
+    if not get_current_hardware_profile().supports(HardwareCapability.STANDARD_WORKER_PATCHES):
+        return False
+
+    from vllm_ascend.patch.worker.patch_qwen3_5 import enable_dense_sp
+
+    return enable_dense_sp(vllm_config)
 
 
 def pad_sequence_parallel_tokens(hidden_states: torch.Tensor) -> torch.Tensor:
@@ -1392,6 +1422,10 @@ def should_skip_allreduce_across_dp_group(vllm_config: VllmConfig, is_draft_mode
     is_context_moe_model = is_drafter_moe_model(vllm_config) if is_draft_model else is_moe_model(vllm_config)
     if not is_context_moe_model:
         return True
+    if getattr(ascend_config.finegrained_tp_config, "qkv_iproj_tensor_parallel_size", 1) > 1:
+        # MoE target/draft QKV exchanges need a uniform capacity. Dense
+        # drafters returned above and do not execute these projections.
+        return False
     # Projection collectives belong to the target's execution plan. A dense
     # drafter does not run them and must retain its rank-local K=0 fast path.
     if not is_draft_model and any(
@@ -1399,7 +1433,6 @@ def should_skip_allreduce_across_dp_group(vllm_config: VllmConfig, is_draft_mode
         for name in (
             "oproj_tensor_parallel_size",
             "mlp_tensor_parallel_size",
-            "qkv_iproj_tensor_parallel_size",
             "gproj_tensor_parallel_size",
             "shared_expert_tensor_parallel_size",
         )
