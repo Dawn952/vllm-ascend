@@ -12,7 +12,7 @@ from tests.ut.base import TestBase
 from vllm_ascend import ascend_config
 from vllm_ascend.distributed import parallel_state
 from vllm_ascend.ops import linear
-from vllm_ascend.ops.finegrained_tp import ProjectionMergedColumnParallelLinear
+from vllm_ascend.ops.kda_parallel import KDAMergedColumnParallelLinear
 from vllm_ascend.ops.linear import (
     AscendDCPGroupColumnParallelLinear,
     AscendMergedColumnParallelLinear,
@@ -272,7 +272,7 @@ class TestAscendMergedColumnParallelLinear(BaseLinearTest):
     @unittest.skipIf(vllm_version_is("0.33.0"), "Stacked shard tracking was added after v0.33")
     def test_custom_allocations_preserve_missing_shard_validation(self):
         layers: tuple[Any, ...] = (
-            ProjectionMergedColumnParallelLinear(8, [4, 4], group=None),
+            KDAMergedColumnParallelLinear(8, [4, 4], tp_group=SimpleNamespace(world_size=1, rank_in_group=0)),
             AscendMergedColumnParallelLinear(input_size=8, output_sizes=[4, 4], bias=False, disable_tp=True),
             AscendQKVParallelLinear(hidden_size=8, head_size=2, total_num_heads=2, bias=False, disable_tp=True),
         )
