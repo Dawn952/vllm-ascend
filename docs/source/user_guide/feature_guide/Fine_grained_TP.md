@@ -93,7 +93,10 @@ and head layout in the model constructor; these conditions do not restrict GLM Q
 `gproj_tensor_parallel_size` independently shards Kimi's full-rank KDA and DSA
 output-gate projections. It uses the same Kimi graph-decode conditions, and its
 size must divide the corresponding KDA and DSA head counts. Both projection
-sizes default to `1`; `0` also disables a split.
+sizes default to `1`; `0` also disables a split. Kimi uses the A5 multistream
+schedule for these projections. The gate exchange starts after its local GEMM;
+KDA waits after the recurrent core and DSA waits after attention, immediately
+before applying the gate.
 
 #### LM Head TP and Speculative Decoding
 
