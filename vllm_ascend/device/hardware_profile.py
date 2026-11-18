@@ -152,8 +152,6 @@ class HardwareCapability(Enum):
     MLA_FLASH = auto()
     # NoPE Prolog V3 with W8A8 projections and per-group INT8 KV.
     SFA_NOPE_PROLOG_V3 = auto()
-    # BF16 split-RoPE FIA decode accepts non-power-of-two Q heads in TND_NTD.
-    FIA_MLA_BF16_TND_NATIVE_HEADS = auto()
     # Allow MLAPO with native floating-point projection weights, not only quantized weights.
     MLAPO_NATIVE_WEIGHTS = auto()
     # Accept ``fullmesh_v2`` as the MC2 communication algorithm.
@@ -529,7 +527,6 @@ _HARDWARE_PROFILES: Mapping[AscendDeviceType, HardwareProfile] = MappingProxyTyp
                     HardwareCapability.LOCAL_KV_COMM_RESOURCE,
                     HardwareCapability.LORA_CUSTOM_OPS,
                     HardwareCapability.MLA_FLASH,
-                    HardwareCapability.FIA_MLA_BF16_TND_NATIVE_HEADS,
                     HardwareCapability.MLAPO_NATIVE_WEIGHTS,
                     HardwareCapability.MINIMAX_M3_GBSA_METADATA_REUSE,
                     HardwareCapability.MINIMAX_M3_INDEX_SCORE_TOPK_FUSION,
