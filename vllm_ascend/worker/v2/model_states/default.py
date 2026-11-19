@@ -385,10 +385,9 @@ class AscendModelState(DefaultModelState):
 
     def dummy_inputs_embeds(self, num_tokens: int) -> torch.Tensor:
         inputs_embeds = super().dummy_inputs_embeds(num_tokens)
-        if ring_state_update_skipped() and self.supports_mm_inputs and embedding_tp_enable():
-            # Active MM-capable ranks exchange embeddings before graph replay.
-            # Runtime idle peers must join that exchange before their graph too.
-            # Preserve the persistent buffer address read by the captured graph.
+        if ring_state_update_skipped() and embedding_tp_enable():
+            # Join the active ranks' pre-forward embedding exchange for MM or prompt
+            # embeddings, writing into the persistent buffer used by graph replay.
             input_ids = torch.zeros(num_tokens, dtype=torch.int32, device=inputs_embeds.device)
             inputs_embeds.copy_(self.model.embed_input_ids(input_ids))
         return inputs_embeds
