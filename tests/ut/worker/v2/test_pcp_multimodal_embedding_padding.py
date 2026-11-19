@@ -14,23 +14,36 @@ from vllm_ascend.worker.v2.model_states.default import AscendModelState
 
 @pytest.mark.parametrize("runtime_idle", [False, True])
 @pytest.mark.parametrize("fine_embedding", [False, True])
-@pytest.mark.parametrize("supports_mm", [False, True])
-def test_idle_embedding_joins_exchange_and_keeps_graph_buffer(monkeypatch, runtime_idle, fine_embedding, supports_mm):
+@pytest.mark.parametrize(
+    ("supports_mm", "prompt_embeds"), [(False, False), (False, True), (True, False), (True, True)]
+)
+def test_idle_embedding_joins_exchange_and_keeps_graph_buffer(
+    monkeypatch, runtime_idle, fine_embedding, supports_mm, prompt_embeds
+):
     state = AscendModelState.__new__(AscendModelState)
     state.supports_mm_inputs = supports_mm
+    state.prompt_embeds_state = object() if prompt_embeds else None
+    state.rope_state = None
     persistent = torch.full((6, 4), -1.0)
-    state.encoder_runner = SimpleNamespace(inputs_embeds=persistent)
-    state.inputs_embeds = persistent
+    if supports_mm:
+        state.encoder_runner = SimpleNamespace(inputs_embeds=persistent)
+    elif prompt_embeds:
+        state.inputs_embeds = persistent
     joined = torch.arange(16, dtype=torch.float32).reshape(4, 4)
     state.model = SimpleNamespace(embed_input_ids=Mock(return_value=joined))
     monkeypatch.setattr(model_state_module, "ring_state_update_skipped", lambda: runtime_idle)
     monkeypatch.setattr(model_state_module, "embedding_tp_enable", lambda: fine_embedding)
 
-    result = state.dummy_inputs_embeds(4)
+    model_inputs = state.prepare_dummy_inputs(num_reqs=1, num_tokens=4)
+    if not supports_mm and not prompt_embeds:
+        assert "inputs_embeds" not in model_inputs
+        state.model.embed_input_ids.assert_not_called()
+        return
 
+    result = model_inputs["inputs_embeds"]
     assert result.data_ptr() == persistent.data_ptr()
     assert result.shape == (4, 4)
-    if runtime_idle and fine_embedding and supports_mm:
+    if runtime_idle and fine_embedding:
         state.model.embed_input_ids.assert_called_once()
         ids = state.model.embed_input_ids.call_args.args[0]
         torch.testing.assert_close(ids, torch.zeros(4, dtype=torch.int32))
