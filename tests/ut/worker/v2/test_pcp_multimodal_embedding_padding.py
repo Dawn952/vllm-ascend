@@ -14,9 +14,7 @@ from vllm_ascend.worker.v2.model_states.default import AscendModelState
 
 @pytest.mark.parametrize("runtime_idle", [False, True])
 @pytest.mark.parametrize("fine_embedding", [False, True])
-@pytest.mark.parametrize(
-    ("supports_mm", "prompt_embeds"), [(False, False), (False, True), (True, False), (True, True)]
-)
+@pytest.mark.parametrize(("supports_mm", "prompt_embeds"), [(False, False), (False, True), (True, False), (True, True)])
 def test_idle_embedding_joins_exchange_and_keeps_graph_buffer(
     monkeypatch, runtime_idle, fine_embedding, supports_mm, prompt_embeds
 ):
