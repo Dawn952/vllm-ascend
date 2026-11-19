@@ -383,7 +383,9 @@ class AscendModelState(DefaultModelState):
             "block_table": block_tables[group_id][: batch.num_reqs],
         }
 
-    def dummy_inputs_embeds(self, num_tokens: int) -> torch.Tensor:
+    def dummy_inputs_embeds(self, num_tokens: int, input_ids: torch.Tensor | None = None) -> torch.Tensor:
+        if input_ids is not None:
+            return super().dummy_inputs_embeds(num_tokens, input_ids)
         inputs_embeds = super().dummy_inputs_embeds(num_tokens)
         if ring_state_update_skipped() and embedding_tp_enable():
             # Join the active ranks' pre-forward embedding exchange for MM or prompt
