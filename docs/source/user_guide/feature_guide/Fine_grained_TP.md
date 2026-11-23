@@ -36,11 +36,11 @@ Fine-grained TP is designed for the **decode instance** of PD separation, where 
 | **G Proj**    | ❌     | ✅     | ❌       | ✅      |
 | **shared expert** | ❌ | ✅     | ❌       | ✅      |
 
-```{note}
-- QKV IProj eager support applies to GLM; Kimi requires graph decode as described in [projection preconditions](#preconditions-for-qkv-iproj-tp).
-- o_proj / MLP TP cannot be combined with standard TP and require `tensor_parallel_size == 1`; embedding / LM head TP can — see [Standard Tensor Parallelism Requirement](#standard-tensor-parallelism-requirement).
-- LM head TP can be combined with speculative decoding (EAGLE, DFlash, DFlash2, and DSpark draft models); see [LM Head TP and Speculative Decoding](#lm-head-tp-and-speculative-decoding).
-```
+!!! note
+
+    - QKV IProj eager support applies to GLM; Kimi requires graph decode as described in [projection preconditions](#preconditions-for-qkv-iproj-tp).
+    - o_proj / MLP TP cannot be combined with standard TP and require `tensor_parallel_size == 1`; embedding / LM head TP can — see [Standard Tensor Parallelism Requirement](#standard-tensor-parallelism-requirement).
+    - LM head TP can be combined with speculative decoding (EAGLE, DFlash, DFlash2, and DSpark draft models); see [LM Head TP and Speculative Decoding](#lm-head-tp-and-speculative-decoding).
 
 ### Constraints and Limitations
 
@@ -79,7 +79,7 @@ If the largest cudagraph capture size does not cover the largest decode-shaped s
 
 Set `qkv_iproj_tensor_parallel_size` above `1` when the deployment meets these conditions.
 
-- GLM-5.3-Flash or Kimi-K3.1 on a P/D-disaggregated decode node (`kv_role = kv_consumer`).
+- GLM-5.3-Flash or [Kimi K3.1 Pro (Experimental)](../../tutorials/models/Kimi-K3.1-Pro.md) on a P/D-disaggregated decode node (`kv_role = kv_consumer`).
 - `tensor_parallel_size == 1`, `prefill_context_parallel_size == 1` and `pipeline_parallel_size == 1`.
 - A QKV IProj TP size that evenly divides both `data_parallel_size` and the KDA head count.
 
@@ -93,7 +93,7 @@ and head layout in the model constructor; these conditions do not restrict GLM Q
 `gproj_tensor_parallel_size` independently shards Kimi's full-rank KDA and DSA
 output-gate projections. It uses the same Kimi graph-decode conditions, and its
 size must divide the corresponding KDA and DSA head counts. Both projection
-sizes default to `1`. A value of `0` also disables a split. On A5, KDA schedules
+sizes default to `1`. A value of `0` also disables a split. On 950DT Products, KDA schedules
 the BF16 beta projection alongside QKV input quantization. After the first
 causal convolution, the auxiliary stream computes the output gate and exchanges
 its head shards while the main stream can run recurrent KDA or RecoverSSM.
@@ -309,7 +309,7 @@ local [T,H] -> AllGather [8T,H]
 
 The runner owns both collectives, outside the shared MLP's linear wrappers.
 This also covers the A3 INT8-activation fused path, which directly invokes
-quantized matmuls, and A5 MXFP paths, which retain their scheme-specific
+quantized matmuls, and 950DT Products MXFP paths, which retain their scheme-specific
 activation quantization and processed weight layouts. The shared-expert
 contribution stays on the separate branch when routed MegaMoe is used; its
 fused shared ABI does not implement these DP-axis collectives.
@@ -328,7 +328,7 @@ Requirements:
 - A MoE model using Ascend's shared runner and standard `gate_up_proj` /
   `down_proj` linears, with the shared-expert prefix recognized by the linear
   dispatcher. Incompatible shared modules fail explicitly during construction.
-- A3 or A5, global `TP=PCP=DCP=PP=1`, and a size evenly dividing DP.
+- A3 or 950DT Products, global `TP=PCP=DCP=PP=1`, and a size evenly dividing DP.
   The shared intermediate dimension must also divide evenly by the size.
 - P/D decode deployment with graph mode and capture capacity covering every
   decode step, including speculative-token slots. Idle ranks still participate
