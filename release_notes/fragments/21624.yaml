@@ -9,3 +9,7 @@ entries:
       in `--additional-config` to a supported size greater than 1.
       The `shared_expert_tensor_parallel_size` setting independently shards shared experts, and all three
       settings default to 1 (disabled).
+  - category: feature
+    text: >-
+      Model Runner V2 deployments with fine-grained LM-head TP and model TP, PCP, DCP and PP
+      all equal to 1 can enable `finegrained_tp_config.lmhead_tp_prompt_logprobs` to return prompt token scores.
