@@ -142,6 +142,7 @@ Design / ops (analysis branch): `docs/source/developer_guide/Design_Documents/ru
 | `oproj_tensor_parallel_size`     | int  | `1` | The custom tensor parallel size of `o_proj`.     |
 | `mlp_tensor_parallel_size`       | int  | `1` | The custom tensor parallel size of `mlp`.       |
 | `lmhead_tensor_parallel_size`    | int  | `1` | The custom tensor parallel size of `lm_head`.    |
+| `lmhead_tp_prompt_logprobs` | bool | `false` | Enable collective prompt scoring with fine-grained LM-head TP. Requires Model Runner V2, LM-head TP greater than 1, and TP, PCP, DCP, and PP equal to 1. When enabled, each sampling step synchronizes the number of prompt rows per scoring chunk across the LM-head group. |
 | `embedding_tensor_parallel_size` | int  | `1` | The custom tensor parallel size of `embedding`. |
 | `shared_expert_tensor_parallel_size` | int | `1` | Independent shared-expert TP along DP. Requires graph-dispatched PD decode with global TP=PCP=DCP=PP=1. See [shared-expert TP](../feature_guide/Fine_grained_TP.md#shared-expert-fine-grained-tp). |
 | `qkv_iproj_tensor_parallel_size`  | int  | `1` | The custom tensor parallel size of QKV input projections. See [QKV IProj preconditions](../feature_guide/Fine_grained_TP.md#preconditions-for-qkv-iproj-tp). |
