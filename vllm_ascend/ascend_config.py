@@ -1472,6 +1472,7 @@ class FinegrainedTPConfig:
 
     oproj_tensor_parallel_size: int = 1
     lmhead_tensor_parallel_size: int = 1
+    lmhead_tp_prompt_logprobs: bool = False
     embedding_tensor_parallel_size: int = 1
     mlp_tensor_parallel_size: int = 1
     shared_expert_tensor_parallel_size: int = 1
@@ -1516,6 +1517,21 @@ class FinegrainedTPConfig:
         vc = vllm_config
         enabled_configs = []
         from vllm_ascend.utils import model_uses_kimi_kda
+
+        if self.lmhead_tp_prompt_logprobs:
+            parallel = vc.parallel_config
+            if (
+                self.lmhead_tensor_parallel_size <= 1
+                or not vc.use_v2_model_runner
+                or parallel.tensor_parallel_size != 1
+                or parallel.prefill_context_parallel_size != 1
+                or parallel.decode_context_parallel_size != 1
+                or parallel.pipeline_parallel_size != 1
+            ):
+                raise ValueError(
+                    "LM-head TP prompt scoring requires Model Runner V2, LM-head TP > 1, and TP/PCP/DCP/PP=1."
+                )
+            enabled_configs.append("lmhead_tp_prompt_logprobs=True")
 
         if self.gproj_tensor_parallel_size > 1 and getattr(vc.model_config.hf_config, "model_type", None) != "kimi_k31":
             raise ValueError("gproj_tensor_parallel_size > 1 is supported only on Kimi K3.1 Pro.")

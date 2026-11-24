@@ -9,8 +9,10 @@ import torch
 from vllm.config import CompilationConfig, VllmConfig, set_current_vllm_config
 from vllm.config.attention import AttentionConfig, HiSparseConfig
 from vllm.config.compilation import CompilationMode, CUDAGraphMode
+from vllm.exceptions import VLLMValidationError
 from vllm.platforms import PlatformEnum
 from vllm.platforms.interface import Platform
+from vllm.sampling_params import SamplingParams
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
 from vllm.v1.attention.selector import AttentionSelectorConfig  # type: ignore
 
@@ -38,6 +40,32 @@ from vllm_ascend.utils import (
     dsv4_skips_indexer_topk,
     vllm_version_is,
 )
+
+
+@pytest.mark.parametrize(
+    "lmhead_tp, enabled, sampling_kwargs, rejected_parameter",
+    [
+        (8, False, {"prompt_logprobs": 0}, "prompt_logprobs"),
+        (8, False, {"prompt_logprob_token_ids": [[1]]}, "prompt_logprob_token_ids"),
+        (8, False, {"logprobs": 1}, None),
+        (8, True, {"prompt_logprobs": 0}, None),
+        (8, True, {"prompt_logprob_token_ids": [[1]]}, None),
+        (1, False, {"prompt_logprobs": 0}, None),
+    ],
+)
+def test_validate_request_lmhead_tp_prompt_scoring(lmhead_tp, enabled, sampling_kwargs, rejected_parameter):
+    config = SimpleNamespace(
+        finegrained_tp_config=SimpleNamespace(lmhead_tensor_parallel_size=lmhead_tp, lmhead_tp_prompt_logprobs=enabled)
+    )
+    params = SamplingParams(**sampling_kwargs)
+    inputs = {"type": "tokens", "prompt_token_ids": [1, 2]}
+    with patch("vllm_ascend.platform.get_ascend_config", return_value=config):
+        if rejected_parameter is None:
+            NPUPlatform.validate_request(inputs, params)
+        else:
+            with pytest.raises(VLLMValidationError, match="lmhead_tp_prompt_logprobs") as exc_info:
+                NPUPlatform.validate_request(inputs, params)
+            assert exc_info.value.parameter == rejected_parameter
 
 
 @pytest.mark.parametrize("block_size,interleave", [(768, 128), (768, 384), (768, 768), (1536, 768), (1536, 1536)])
