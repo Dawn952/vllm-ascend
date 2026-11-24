@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from .kda import Glm5NextLinearAttention
 
 
+# TODO: Move this shared layout to a model-neutral module under ops/.
 class KDAInputProjectionTPLayout:
     def __init__(self, group: GroupCoordinator | None, num_heads: int, head_dim: int):
         self.group = group
