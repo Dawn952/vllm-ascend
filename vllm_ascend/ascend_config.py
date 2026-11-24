@@ -1517,6 +1517,9 @@ class FinegrainedTPConfig:
         enabled_configs = []
         from vllm_ascend.utils import model_uses_kimi_kda
 
+        if self.gproj_tensor_parallel_size > 1 and getattr(vc.model_config.hf_config, "model_type", None) != "kimi_k31":
+            raise ValueError("gproj_tensor_parallel_size > 1 is supported only on Kimi K3.1 Pro.")
+
         projection_tp = self.gproj_tensor_parallel_size > 1 or (
             self.qkv_iproj_tensor_parallel_size > 1 and model_uses_kimi_kda(vc.model_config)
         )

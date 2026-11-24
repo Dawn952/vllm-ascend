@@ -1548,6 +1548,16 @@ class TestSubconfigPydanticTypeValidation(TestBase):
         with self.assertRaisesRegex(ValueError, "qkv_iproj_tensor_parallel_size must be non-negative"):
             FinegrainedTPConfig(qkv_iproj_tensor_parallel_size=-1)
 
+    def test_gproj_tp_rejects_models_without_gate_sharding(self):
+        vc = self._oproj_tp_vllm_config()
+        for model_type in ("glm5_next", "kimi_linear", "other"):
+            with self.subTest(model_type=model_type):
+                vc.model_config.hf_config = SimpleNamespace(model_type=model_type)
+                with self.assertRaisesRegex(ValueError, "supported only on Kimi K3.1 Pro"):
+                    FinegrainedTPConfig(gproj_tensor_parallel_size=2)._validate_preconditions(vc)
+                for size in (0, 1):
+                    FinegrainedTPConfig(gproj_tensor_parallel_size=size)._validate_preconditions(vc)
+
     def test_oproj_tp_rejects_pcp(self):
         config = FinegrainedTPConfig(oproj_tensor_parallel_size=2)
         with self.assertRaisesRegex(AssertionError, "not supported with prefill_context_parallel_size"):

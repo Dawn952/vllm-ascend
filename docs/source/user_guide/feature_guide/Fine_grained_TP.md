@@ -93,12 +93,7 @@ and head layout in the model constructor; these conditions do not restrict GLM Q
 `gproj_tensor_parallel_size` independently shards Kimi's full-rank KDA and DSA
 output-gate projections. It uses the same Kimi graph-decode conditions, and its
 size must divide the corresponding KDA and DSA head counts. Both projection
-sizes default to `1`. A value of `0` also disables a split. On 950DT Products, KDA schedules
-the BF16 beta projection alongside QKV input quantization. After the first
-causal convolution, the auxiliary stream computes the output gate and exchanges
-its head shards while the main stream can run recurrent KDA or RecoverSSM.
-The main stream joins the auxiliary stream before gated normalization. DSA
-waits for its gate after attention.
+sizes default to `1`. A value of `0` also disables a split.
 
 #### LM Head TP and Speculative Decoding
 
