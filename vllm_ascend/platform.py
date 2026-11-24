@@ -26,6 +26,7 @@ from uuid import uuid4
 
 import torch
 import vllm.envs as envs_vllm
+from vllm.exceptions import VLLMValidationError
 from vllm.logger import logger
 from vllm.platforms import Platform, PlatformEnum
 
@@ -72,6 +73,9 @@ from vllm_ascend.utils import (
 
 if TYPE_CHECKING:
     from vllm.config import ModelConfig, SpeculativeConfig, VllmConfig
+    from vllm.inputs import EngineInput
+    from vllm.pooling_params import PoolingParams
+    from vllm.sampling_params import SamplingParams
     from vllm.utils import FlexibleArgumentParser
     from vllm.v1.attention.backends.mla.prefill.base import MLAPrefillBackend
     from vllm.v1.attention.backends.mla.prefill.selector import MLAPrefillSelectorConfig
@@ -616,6 +620,26 @@ class NPUPlatform(Platform):
                             )
                     else:
                         has_topk = True
+
+    @classmethod
+    def validate_request(cls, processed_inputs: EngineInput, params: SamplingParams | PoolingParams) -> None:
+        from vllm.sampling_params import SamplingParams
+
+        super().validate_request(processed_inputs, params)
+        if not isinstance(params, SamplingParams):
+            return
+        if params.prompt_logprobs is not None:
+            parameter = "prompt_logprobs"
+        elif getattr(params, "prompt_logprob_token_ids", None) is not None:
+            parameter = "prompt_logprob_token_ids"
+        else:
+            return
+        fine_tp = get_ascend_config().finegrained_tp_config
+        if fine_tp.lmhead_tensor_parallel_size > 1 and not fine_tp.lmhead_tp_prompt_logprobs:
+            raise VLLMValidationError(
+                "Prompt scoring with fine-grained LM-head TP requires finegrained_tp_config.lmhead_tp_prompt_logprobs.",
+                parameter=parameter,
+            )
 
     @classmethod
     def check_and_update_config(cls, vllm_config: VllmConfig) -> None:

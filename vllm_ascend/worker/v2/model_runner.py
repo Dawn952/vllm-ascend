@@ -138,6 +138,7 @@ from vllm_ascend.worker.v2.kv_connector import MambaCopyKVConnector
 from vllm_ascend.worker.v2.kvpp import KVPPRuntime
 from vllm_ascend.worker.v2.pcp_manager import AscendPCPManager
 from vllm_ascend.worker.v2.pp_transport import resolve_spec_pp_support
+from vllm_ascend.worker.v2.prompt_logprobs import LmheadPromptLogprobsWorker
 from vllm_ascend.worker.v2.spec_decode import init_speculator
 from vllm_ascend.worker.v2.states import AscendRequestState
 from vllm_ascend.worker.v2.utils import (
@@ -373,6 +374,13 @@ class NPUModelRunner(GPUModelRunner):
         # the dumper at the end of load_model).
         if self.compilation_config.cudagraph_mode != CUDAGraphMode.NONE:
             self._start_dump_data()
+        if (
+            self.prompt_logprobs_worker is not None
+            and self.ascend_config.finegrained_tp_config.lmhead_tp_prompt_logprobs
+        ):
+            self.prompt_logprobs_worker = LmheadPromptLogprobsWorker(
+                self.max_num_reqs, self.device, logprobs_mode=self.model_config.logprobs_mode
+            )
         self.model_state.prompt_logprobs_worker = self.prompt_logprobs_worker
 
     @runtime_guard_sample_tokens
@@ -380,17 +388,14 @@ class NPUModelRunner(GPUModelRunner):
         if (
             lmhead_tp_enable()
             and self.prompt_logprobs_worker is not None
+            and not isinstance(self.prompt_logprobs_worker, LmheadPromptLogprobsWorker)
             and (
                 self.prompt_logprobs_worker.uses_prompt_logprobs.any()
                 or getattr(self.prompt_logprobs_worker, "token_id_scores", {})
             )
         ):
-            # The prompt-logprobs worker issues a second compute_logits with
-            # unpadded rows that desyncs the LM-head collectives and hangs.
-            # vLLM #54335 adds fixed-token scoring through the same unpadded
-            # compute_logits path, so it has the same collective restriction.
             raise NotImplementedError(
-                "prompt logprobs and fixed-token prompt scoring are not supported with lmhead TP."
+                "Prompt scoring with LM-head TP requires finegrained_tp_config.lmhead_tp_prompt_logprobs."
             )
 
         state = self.execute_model_state
@@ -813,6 +818,10 @@ class NPUModelRunner(GPUModelRunner):
                 device=self.device,
             )
             self.model.compute_logits(self.execute_model_state.hidden_states[dummy_indices])
+            if isinstance(self.prompt_logprobs_worker, LmheadPromptLogprobsWorker):
+                self.prompt_logprobs_worker.finish_prompt_scoring(
+                    self.model.compute_logits, self.execute_model_state.hidden_states
+                )
         self.kvpp.complete_forward()
 
         if dump_forward:
@@ -1238,7 +1247,7 @@ class NPUModelRunner(GPUModelRunner):
     def sample(self, hidden_states, input_batch, grammar_output):
         """Override GPUModelRunner.sample for lmhead TP: every rank must feed
         compute_logits the same row count — pad up to ``_lmhead_tp_max_num_logits()``
-        and trim back; prompt_logprobs stays unsupported (same as V1)."""
+        and trim back. Prompt scoring coordinates its own row counts."""
         if not lmhead_tp_enable():
             return super().sample(hidden_states, input_batch, grammar_output)
 
